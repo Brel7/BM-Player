@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.BMPlayer" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#B9750F</item>
+        <item name="android:navigationBarColor">#EEF0ED</item>
+        <item name="android:statusBarColor">#EEF0ED</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

@@ -1,0 +1,28 @@
+# Android / Gradle
+.gradle/
+.kotlin/
+build/
+**/build/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Local machine configuration
+local.properties
+.externalNativeBuild/
+.cxx/
+
+# Generated and temporary files
+captures/
+*.log
+*.hprof
+.DS_Store
+Thumbs.db
+
+# Secrets and local credentials
+*.jks
+*.keystore
+secrets.properties
