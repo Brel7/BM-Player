@@ -3,17 +3,21 @@ package com.bmplayer
 import android.Manifest
 import android.content.ComponentName
 import android.content.pm.PackageManager
-import android.os.Build
-import android.os.Bundle
 import android.graphics.Color as AndroidColor
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.os.Build
+import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,104 +26,96 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.AlertDialog
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.layout.offset
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
-import com.bmplayer.domain.model.Track
-import com.bmplayer.data.preferences.UserPreferences
-import com.bmplayer.data.preferences.UserPreferencesStore
+import com.bmplayer.data.local.FavoriteDao
+import com.bmplayer.data.local.FavoriteEntity
 import com.bmplayer.data.local.HistoryDao
 import com.bmplayer.data.local.HistoryEntity
 import com.bmplayer.data.local.PlaylistDao
 import com.bmplayer.data.local.PlaylistEntity
 import com.bmplayer.data.local.PlaylistTrackEntity
-import com.bmplayer.data.local.TrackMetadataOverrideDao
-import com.bmplayer.data.local.TrackMetadataOverrideEntity
-import com.bmplayer.data.local.FavoriteDao
-import com.bmplayer.data.local.FavoriteEntity
-import com.bmplayer.data.lyrics.LrcParser
-import com.bmplayer.data.lyrics.LyricLine
-import com.bmplayer.playback.PlaybackService
+import com.bmplayer.data.preferences.UserPreferences
+import com.bmplayer.data.preferences.UserPreferencesStore
+import com.bmplayer.domain.model.Track
 import com.bmplayer.playback.PlaybackCommands
+import com.bmplayer.playback.PlaybackService
 import com.bmplayer.ui.LibraryViewModel
 import com.bmplayer.ui.theme.BMPlayerTheme
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
-import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.atan2
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import javax.inject.Inject
 
@@ -141,12 +137,6 @@ class MainActivity : ComponentActivity() {
     private var currentTrackId by mutableStateOf<Long?>(null)
     private var sleepTimerRemainingMs by mutableStateOf(0L)
     private var playlistTrackIds by mutableStateOf<Set<Long>>(emptySet())
-    private var lyricsLines by mutableStateOf<List<LyricLine>>(emptyList())
-    private val lyricsPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            contentResolver.openInputStream(uri)?.bufferedReader()?.use { lyricsLines = LrcParser.parse(it.readText()) }
-        }
-    }
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         libraryViewModel.refresh()
     }
@@ -213,16 +203,27 @@ class MainActivity : ComponentActivity() {
                     onResetTheme = { lifecycleScope.launch { preferencesStore.resetTheme() } },
                     onSleepTimer = ::startSleepTimer,
                     onEffectsEnabled = ::setEffectsEnabled,
-                    onOpenLyrics = { lyricsPicker.launch(arrayOf("text/*", "application/octet-stream")) },
-                    lyrics = lyricsLines
-                    ,onCreatePlaylist = { name -> lifecycleScope.launch { playlistDao.create(PlaylistEntity(name = name)) } }
-                    ,onDeletePlaylist = { id -> lifecycleScope.launch { playlistDao.delete(id) } }
-                    ,onAddToPlaylist = { playlistId, trackId -> lifecycleScope.launch { playlistDao.addTrack(PlaylistTrackEntity(playlistId, trackId, playlistDao.nextPosition(playlistId))); playlistTrackIds = playlistTrackIds + trackId } }
-                    ,onPlayPlaylist = ::playPlaylist
-                    ,onSelectPlaylist = { id -> lifecycleScope.launch { playlistTrackIds = playlistDao.tracks(id).map { it.trackId }.toSet() } }
-                    ,onCrossfadeChange = { seconds -> lifecycleScope.launch { preferencesStore.setCrossfadeSeconds(seconds); controller?.sendCustomCommand(SessionCommand(PlaybackCommands.SET_CROSSFADE, Bundle().apply { putInt(PlaybackCommands.SECONDS, seconds) }), Bundle.EMPTY) } }
-                    ,onArtworkShapeChange = { shape -> lifecycleScope.launch { preferencesStore.setArtworkShape(shape) } }
-                    ,onLanguageChange = { language -> lifecycleScope.launch { preferencesStore.setLanguage(language) } }
+                    onCreatePlaylist = { name -> lifecycleScope.launch { playlistDao.create(PlaylistEntity(name = name)) } },
+                    onDeletePlaylist = { id -> lifecycleScope.launch { playlistDao.delete(id) } },
+                    onAddToPlaylist = { playlistId, trackId ->
+                        lifecycleScope.launch {
+                            playlistDao.addTrack(PlaylistTrackEntity(playlistId, trackId, playlistDao.nextPosition(playlistId)))
+                            playlistTrackIds = playlistTrackIds + trackId
+                        }
+                    },
+                    onPlayPlaylist = ::playPlaylist,
+                    onSelectPlaylist = { id -> lifecycleScope.launch { playlistTrackIds = playlistDao.tracks(id).map { it.trackId }.toSet() } },
+                    onCrossfadeChange = { seconds ->
+                        lifecycleScope.launch {
+                            preferencesStore.setCrossfadeSeconds(seconds)
+                            controller?.sendCustomCommand(
+                                SessionCommand(PlaybackCommands.SET_CROSSFADE, Bundle().apply { putInt(PlaybackCommands.SECONDS, seconds) }),
+                                Bundle.EMPTY
+                            )
+                        }
+                    },
+                    onArtworkShapeChange = { shape -> lifecycleScope.launch { preferencesStore.setArtworkShape(shape) } },
+                    onLanguageChange = { language -> lifecycleScope.launch { preferencesStore.setLanguage(language) } }
                 )
             }
         }
@@ -350,8 +351,6 @@ private fun BMPlayerApp(
     onResetTheme: () -> Unit,
     onSleepTimer: (Int) -> Unit,
     onEffectsEnabled: (Boolean) -> Unit,
-    onOpenLyrics: () -> Unit,
-    lyrics: List<LyricLine>,
     onCreatePlaylist: (String) -> Unit,
     playlistTrackIds: Set<Long>,
     onDeletePlaylist: (Long) -> Unit,
@@ -378,7 +377,7 @@ private fun BMPlayerApp(
         }
     }) { padding ->
         if (tab == 0) LibraryScreen(tracks, favoriteIds, currentTrackId, selectedTrack, preferences.artworkShape, onRefresh, onPlay, onToggleFavorite, onPlayAll, { selectedTrack = it }, Modifier.padding(padding))
-        else if (tab == 1) NowPlayingScreen(activeTrack, preferences.artworkShape, isPlaying, playbackPositionMs, playbackDurationMs, onSeek, onPause, onResume, onNext, onPrevious, shuffleEnabled, repeatMode, onToggleShuffle, onCycleRepeat, { tab = 0 }, lyrics, Modifier.padding(padding))
+        else if (tab == 1) NowPlayingScreen(activeTrack, preferences.artworkShape, isPlaying, playbackPositionMs, playbackDurationMs, onSeek, onPause, onResume, onNext, onPrevious, shuffleEnabled, repeatMode, onToggleShuffle, onCycleRepeat, { tab = 0 }, Modifier.padding(padding))
         else if (tab == 2) SettingsScreen(preferences, onToggleDarkTheme, onAccentChange, onResetTheme, onEffectsEnabled, sleepTimerRemainingMs, onSleepTimer, onCrossfadeChange, onArtworkShapeChange, onLanguageChange, Modifier.padding(padding))
         else if (tab == 3) FavoritesScreen(tracks.filter { it.id in favoriteIds }, currentTrackId, preferences.artworkShape, { selectedTrack = it; onPlay(it) }, { onToggleFavorite(it) }, Modifier.padding(padding))
         else if (tab == 4) PlaylistScreen(playlists, tracks, playlistTrackIds, preferences.artworkShape, onCreatePlaylist, onDeletePlaylist, onAddToPlaylist, onPlayPlaylist, onSelectPlaylist, Modifier.padding(padding))
@@ -388,6 +387,14 @@ private fun BMPlayerApp(
 
 @Composable
 private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTrackId: Long?, selected: Track?, artworkShapeValue: String, onRefresh: () -> Unit, onPlay: (Track) -> Unit, onToggleFavorite: (Track) -> Unit, onPlayAll: (List<Track>) -> Unit, onSelect: (Track) -> Unit, modifier: Modifier) {
+    var searchQuery by remember { mutableStateOf("") }
+    val matchingTracks = remember(tracks, searchQuery) {
+        val query = searchQuery.trim()
+        if (query.isEmpty()) tracks else tracks.filter { track ->
+            listOf(track.title, track.artist, track.album, track.genre)
+                .any { value -> value.contains(query, ignoreCase = true) }
+        }
+    }
     Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 24.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
@@ -397,15 +404,41 @@ private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTr
             }
             Row {
                 IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Actualiser") }
-                IconButton(onClick = { onPlayAll(tracks) }, enabled = tracks.isNotEmpty()) { Icon(Icons.Default.PlayArrow, "Lire toute la bibliothèque") }
+                IconButton(onClick = { onPlayAll(matchingTracks) }, enabled = matchingTracks.isNotEmpty()) { Icon(Icons.Default.PlayArrow, if (searchQuery.isBlank()) "Lire toute la bibliothèque" else "Lire tous les résultats") }
             }
         }
         Spacer(Modifier.height(20.dp))
-        Text("${tracks.size} morceaux locaux", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Rechercher") },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = "" }) {
+                    Icon(Icons.Default.Clear, contentDescription = "Effacer la recherche")
+                }
+            },
+            placeholder = { Text("Titre, artiste, album ou genre") }
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            if (searchQuery.isBlank()) "${tracks.size} morceaux locaux" else "${matchingTracks.size} résultat(s) sur ${tracks.size}",
+            style = MaterialTheme.typography.titleMedium
+        )
+        if (searchQuery.isNotBlank() && matchingTracks.isNotEmpty()) {
+            Button(onClick = { onPlayAll(matchingTracks) }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Lire tout (${matchingTracks.size})")
+            }
+        }
         Spacer(Modifier.height(8.dp))
         if (tracks.isEmpty()) EmptyLibrary()
-        else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(tracks, key = { it.id }) { track -> TrackRow(track, selected == track || currentTrackId == track.id, favoriteIds.contains(track.id), artworkShapeValue, { onSelect(track); onPlay(track) }, { onToggleFavorite(track) }) }
+        else if (matchingTracks.isEmpty()) {
+            Text("Aucun morceau ne correspond à « $searchQuery ».", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(matchingTracks, key = { it.id }) { track -> TrackRow(track, selected == track || currentTrackId == track.id, favoriteIds.contains(track.id), artworkShapeValue, { onSelect(track); onPlay(track) }, { onToggleFavorite(track) }) }
         }
     }
 }
@@ -452,7 +485,7 @@ private fun TrackRow(track: Track, selected: Boolean, favorite: Boolean, artwork
 }
 
 @Composable
-private fun NowPlayingScreen(track: Track?, artworkShapeValue: String, isPlaying: Boolean, playbackPositionMs: Long, playbackDurationMs: Long, onSeek: (Long) -> Unit, onPause: () -> Unit, onResume: () -> Unit, onNext: () -> Unit, onPrevious: () -> Unit, shuffleEnabled: Boolean, repeatMode: Int, onToggleShuffle: () -> Unit, onCycleRepeat: () -> Unit, onOpenLibrary: () -> Unit, lyrics: List<LyricLine>, modifier: Modifier) {
+private fun NowPlayingScreen(track: Track?, artworkShapeValue: String, isPlaying: Boolean, playbackPositionMs: Long, playbackDurationMs: Long, onSeek: (Long) -> Unit, onPause: () -> Unit, onResume: () -> Unit, onNext: () -> Unit, onPrevious: () -> Unit, shuffleEnabled: Boolean, repeatMode: Int, onToggleShuffle: () -> Unit, onCycleRepeat: () -> Unit, onOpenLibrary: () -> Unit, modifier: Modifier) {
     var dragOffset by remember { mutableStateOf(0f) }
     Column(modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("LECTURE EN COURS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -507,16 +540,6 @@ private fun NowPlayingScreen(track: Track?, artworkShapeValue: String, isPlaying
             Surface(Modifier.size(68.dp), shape = androidx.compose.foundation.shape.CircleShape, color = MaterialTheme.colorScheme.primary) { IconButton(onClick = if (isPlaying) onPause else onResume) { Icon(imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Lecture", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(34.dp)) } }
             IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, "Suivant", Modifier.size(32.dp)) }
             IconButton(onClick = onCycleRepeat) { Icon(if (repeatMode == androidx.media3.common.Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat, "Répétition", tint = if (repeatMode == androidx.media3.common.Player.REPEAT_MODE_OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary) }
-        }
-        if (lyrics.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text("Paroles", style = MaterialTheme.typography.titleMedium)
-            LazyColumn(Modifier.height(150.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                items(lyrics, key = { it.timeMs }) { line ->
-                    val active = LrcParser.lineAt(lyrics, playbackPositionMs)?.timeMs == line.timeMs
-                    Text("${LrcParser.formatTimestamp(line.timeMs)}  ${line.text}", color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, style = if (active) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium)
-                }
-            }
         }
     }
 }
