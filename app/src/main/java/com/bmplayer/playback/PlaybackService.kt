@@ -11,7 +11,14 @@ import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import androidx.media3.common.Player
+import androidx.glance.appwidget.updateAll
 import com.google.common.util.concurrent.Futures
+import com.bmplayer.widget.BMPlayerWidget
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
@@ -21,6 +28,7 @@ class PlaybackService : MediaSessionService() {
     private var fadeRunnable: Runnable? = null
     private var crossfadePlayer: ExoPlayer? = null
     private var crossfadeInProgress = false
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate() {
         super.onCreate()
@@ -29,9 +37,19 @@ class PlaybackService : MediaSessionService() {
             true
         ).setHandleAudioBecomingNoisy(true).build()
         audioEffects = AudioEffectsManager(player.audioSessionId)
+        player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                val metadata = mediaItem?.mediaMetadata
+                getSharedPreferences("bm_player_widget", MODE_PRIVATE).edit()
+                    .putString("title", metadata?.title?.toString().orEmpty())
+                    .putString("artist", metadata?.artist?.toString().orEmpty())
+                    .apply()
+                serviceScope.launch { BMPlayerWidget().updateAll(this@PlaybackService) }
+            }
+        })
         fadeRunnable = object : Runnable {
             override fun run() {
-                if (!crossfadeInProgress && crossfadeMs > 0 && player.duration > 0 && player.nextMediaItemIndex != androidx.media3.common.C.INDEX_UNSET && player.duration - player.currentPosition <= crossfadeMs) startCrossfade(player)
+                if (!crossfadeInProgress && player.repeatMode != Player.REPEAT_MODE_ONE && crossfadeMs > 0 && player.duration > 0 && player.nextMediaItemIndex != C.INDEX_UNSET && player.duration - player.currentPosition <= crossfadeMs) startCrossfade(player)
                 fadeHandler.postDelayed(this, 250L)
             }
         }.also { fadeHandler.post(it) }
@@ -61,6 +79,7 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onDestroy() {
+        serviceScope.cancel()
         fadeRunnable?.let(fadeHandler::removeCallbacks)
         fadeRunnable = null
         crossfadePlayer?.release()

@@ -3,11 +3,15 @@ package com.bmplayer
 import android.Manifest
 import android.content.ComponentName
 import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.graphics.Color as AndroidColor
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -43,6 +47,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
@@ -88,6 +93,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.glance.appwidget.updateAll
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.session.MediaController
@@ -100,6 +106,7 @@ import com.bmplayer.data.local.HistoryEntity
 import com.bmplayer.data.local.PlaylistDao
 import com.bmplayer.data.local.PlaylistEntity
 import com.bmplayer.data.local.PlaylistTrackEntity
+import com.bmplayer.data.mediastore.MediaStoreObserver
 import com.bmplayer.data.preferences.UserPreferences
 import com.bmplayer.data.preferences.UserPreferencesStore
 import com.bmplayer.domain.model.Track
@@ -113,6 +120,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlin.math.atan2
 import kotlin.math.roundToInt
@@ -137,8 +145,17 @@ class MainActivity : ComponentActivity() {
     private var currentTrackId by mutableStateOf<Long?>(null)
     private var sleepTimerRemainingMs by mutableStateOf(0L)
     private var playlistTrackIds by mutableStateOf<Set<Long>>(emptySet())
+    private val pendingNextTrackIds = mutableListOf<Long>()
+    private var lastObservedTrackId: Long? = null
+    private var playbackRestorationFinished = false
+    private var mediaScanJob: Job? = null
+    private var mediaObserverRegistered = false
+    private val mediaStoreObserver: ContentObserver by lazy {
+        MediaStoreObserver(Handler(Looper.getMainLooper())) { scheduleMediaStoreRefresh() }
+    }
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         libraryViewModel.refresh()
+        registerMediaStoreObserver()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -155,15 +172,31 @@ class MainActivity : ComponentActivity() {
                     Bundle.EMPTY
                 )
             }
+            restorePlaybackState()
             playbackTicker = lifecycleScope.launch {
+                var lastPersistAtMs = 0L
                 while (true) {
                     controller?.let { mediaController ->
                         playbackPositionMs = mediaController.currentPosition.coerceAtLeast(0L)
                         playbackDurationMs = mediaController.duration.coerceAtLeast(0L)
                         playbackPlaying = mediaController.isPlaying
-                        currentTrackId = mediaController.currentMediaItem?.mediaId?.toLongOrNull()
+                        val observedTrackId = mediaController.currentMediaItem?.mediaId?.toLongOrNull()
+                        if (observedTrackId != lastObservedTrackId) {
+                            if (observedTrackId != null && pendingNextTrackIds.firstOrNull() == observedTrackId) {
+                                pendingNextTrackIds.removeAt(0)
+                            }
+                            lastObservedTrackId = observedTrackId
+                            val mediaMetadata = mediaController.currentMediaItem?.mediaMetadata
+                            publishWidgetTrack(mediaMetadata?.title?.toString().orEmpty(), mediaMetadata?.artist?.toString().orEmpty())
+                        }
+                        currentTrackId = observedTrackId
                         shuffleEnabledState = mediaController.shuffleModeEnabled
                         repeatModeState = mediaController.repeatMode
+                        val now = System.currentTimeMillis()
+                        if (playbackRestorationFinished && now - lastPersistAtMs >= 2_000L) {
+                            persistPlaybackState(mediaController)
+                            lastPersistAtMs = now
+                        }
                     }
                     delay(250)
                 }
@@ -182,6 +215,7 @@ class MainActivity : ComponentActivity() {
                     preferences = preferencesStore.preferences.collectAsStateWithLifecycle(UserPreferences()).value,
                     onRefresh = libraryViewModel::refresh,
                     onPlay = ::playTrack,
+                    onPlayNext = ::playNext,
                     onToggleFavorite = ::toggleFavorite,
                     onPlayAll = ::playAll,
                     isPlaying = playbackPlaying,
@@ -229,6 +263,95 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        registerMediaStoreObserver()
+    }
+
+    override fun onStop() {
+        controller?.let(::persistPlaybackState)
+        unregisterMediaStoreObserver()
+        super.onStop()
+    }
+
+    private fun registerMediaStoreObserver() {
+        if (mediaObserverRegistered) return
+        val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
+        if (ActivityCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) return
+        runCatching {
+            contentResolver.registerContentObserver(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, true, mediaStoreObserver)
+            mediaObserverRegistered = true
+        }
+    }
+
+    private fun unregisterMediaStoreObserver() {
+        if (!mediaObserverRegistered) return
+        contentResolver.unregisterContentObserver(mediaStoreObserver)
+        mediaObserverRegistered = false
+        mediaScanJob?.cancel()
+    }
+
+    private fun scheduleMediaStoreRefresh() {
+        mediaScanJob?.cancel()
+        mediaScanJob = lifecycleScope.launch {
+            delay(500L)
+            libraryViewModel.refresh()
+        }
+    }
+
+    private fun restorePlaybackState() {
+        lifecycleScope.launch {
+            val activePlayer = controller
+            if (activePlayer != null && activePlayer.mediaItemCount > 0) {
+                playbackRestorationFinished = true
+                return@launch
+            }
+            val savedState = preferencesStore.preferences.first()
+            val library = withTimeoutOrNull(15_000L) {
+                libraryViewModel.tracks.first { it.isNotEmpty() }
+            }
+            if (library == null) {
+                playbackRestorationFinished = true
+                return@launch
+            }
+            val queue = savedState.playbackQueueIds.mapNotNull { id -> library.firstOrNull { it.id == id } }
+            if (queue.isNotEmpty()) {
+                val player = controller ?: return@launch
+                player.setMediaItems(queue.map(Track::toMediaItem))
+                player.shuffleModeEnabled = savedState.shuffleEnabled
+                player.repeatMode = savedState.repeatMode
+                player.prepare()
+                val startIndex = queue.indexOfFirst { it.id == savedState.playbackTrackId }.coerceAtLeast(0)
+                val startPosition = if (queue[startIndex].id == savedState.playbackTrackId) savedState.playbackPositionMs else 0L
+                player.seekTo(startIndex, startPosition)
+                if (savedState.playbackWasPlaying) player.play()
+            }
+            playbackRestorationFinished = true
+        }
+    }
+
+    private fun persistPlaybackState(player: MediaController) {
+        if (player.mediaItemCount == 0) return
+        lifecycleScope.launch {
+            preferencesStore.savePlaybackState(
+                queueIds = (0 until player.mediaItemCount).mapNotNull { player.getMediaItemAt(it).mediaId.toLongOrNull() },
+                trackId = player.currentMediaItem?.mediaId?.toLongOrNull(),
+                positionMs = player.currentPosition,
+                wasPlaying = player.isPlaying,
+                shuffleEnabled = player.shuffleModeEnabled,
+                repeatMode = player.repeatMode
+            )
+        }
+    }
+
+    private fun publishWidgetTrack(title: String, artist: String) {
+        getSharedPreferences("bm_player_widget", MODE_PRIVATE).edit()
+            .putString("title", title)
+            .putString("artist", artist)
+            .apply()
+        lifecycleScope.launch { com.bmplayer.widget.BMPlayerWidget().updateAll(this@MainActivity) }
+    }
+
     private fun requestAudioPermissionIfNeeded() {
         val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
         if (ActivityCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) permissionLauncher.launch(arrayOf(permission))
@@ -250,6 +373,18 @@ class MainActivity : ComponentActivity() {
         controller?.setMediaItems(tracks.map { it.toMediaItem() })
         controller?.prepare()
         controller?.play()
+    }
+
+    private fun playNext(track: Track) {
+        val player = controller ?: return
+        if (player.mediaItemCount == 0) {
+            playTrack(track)
+            return
+        }
+        val insertAt = (player.currentMediaItemIndex + 1 + pendingNextTrackIds.size).coerceIn(0, player.mediaItemCount)
+        player.addMediaItem(insertAt, track.toMediaItem())
+        pendingNextTrackIds += track.id
+        lifecycleScope.launch { persistPlaybackState(player) }
     }
 
     private fun playPlaylist(playlist: PlaylistEntity) {
@@ -330,6 +465,7 @@ private fun BMPlayerApp(
     preferences: UserPreferences,
     onRefresh: () -> Unit,
     onPlay: (Track) -> Unit,
+    onPlayNext: (Track) -> Unit,
     onToggleFavorite: (Track) -> Unit,
     onPlayAll: (List<Track>) -> Unit,
     isPlaying: Boolean,
@@ -376,7 +512,7 @@ private fun BMPlayerApp(
         }
         }
     }) { padding ->
-        if (tab == 0) LibraryScreen(tracks, favoriteIds, currentTrackId, selectedTrack, preferences.artworkShape, onRefresh, onPlay, onToggleFavorite, onPlayAll, { selectedTrack = it }, Modifier.padding(padding))
+        if (tab == 0) LibraryScreen(tracks, favoriteIds, currentTrackId, selectedTrack, preferences.artworkShape, onRefresh, onPlay, onPlayNext, onToggleFavorite, onPlayAll, { selectedTrack = it }, Modifier.padding(padding))
         else if (tab == 1) NowPlayingScreen(activeTrack, preferences.artworkShape, isPlaying, playbackPositionMs, playbackDurationMs, onSeek, onPause, onResume, onNext, onPrevious, shuffleEnabled, repeatMode, onToggleShuffle, onCycleRepeat, { tab = 0 }, Modifier.padding(padding))
         else if (tab == 2) SettingsScreen(preferences, onToggleDarkTheme, onAccentChange, onResetTheme, onEffectsEnabled, sleepTimerRemainingMs, onSleepTimer, onCrossfadeChange, onArtworkShapeChange, onLanguageChange, Modifier.padding(padding))
         else if (tab == 3) FavoritesScreen(tracks.filter { it.id in favoriteIds }, currentTrackId, preferences.artworkShape, { selectedTrack = it; onPlay(it) }, { onToggleFavorite(it) }, Modifier.padding(padding))
@@ -386,7 +522,7 @@ private fun BMPlayerApp(
 }
 
 @Composable
-private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTrackId: Long?, selected: Track?, artworkShapeValue: String, onRefresh: () -> Unit, onPlay: (Track) -> Unit, onToggleFavorite: (Track) -> Unit, onPlayAll: (List<Track>) -> Unit, onSelect: (Track) -> Unit, modifier: Modifier) {
+private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTrackId: Long?, selected: Track?, artworkShapeValue: String, onRefresh: () -> Unit, onPlay: (Track) -> Unit, onPlayNext: (Track) -> Unit, onToggleFavorite: (Track) -> Unit, onPlayAll: (List<Track>) -> Unit, onSelect: (Track) -> Unit, modifier: Modifier) {
     var searchQuery by remember { mutableStateOf("") }
     val matchingTracks = remember(tracks, searchQuery) {
         val query = searchQuery.trim()
@@ -438,7 +574,7 @@ private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTr
         else if (matchingTracks.isEmpty()) {
             Text("Aucun morceau ne correspond à « $searchQuery ».", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(matchingTracks, key = { it.id }) { track -> TrackRow(track, selected == track || currentTrackId == track.id, favoriteIds.contains(track.id), artworkShapeValue, { onSelect(track); onPlay(track) }, { onToggleFavorite(track) }) }
+            items(matchingTracks, key = { it.id }) { track -> TrackRow(track, selected == track || currentTrackId == track.id, favoriteIds.contains(track.id), artworkShapeValue, { onSelect(track); onPlay(track) }, { onToggleFavorite(track) }, { onPlayNext(track) }) }
         }
     }
 }
@@ -473,13 +609,14 @@ private fun EmptyLibrary() {
 }
 
 @Composable
-private fun TrackRow(track: Track, selected: Boolean, favorite: Boolean, artworkShapeValue: String, onClick: () -> Unit, onToggleFavorite: () -> Unit) {
+private fun TrackRow(track: Track, selected: Boolean, favorite: Boolean, artworkShapeValue: String, onClick: () -> Unit, onToggleFavorite: () -> Unit, onPlayNext: () -> Unit = {}) {
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .12f) else Color.Transparent).clickable(onClick = onClick).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(52.dp).clip(artworkShape(artworkShapeValue)).background(MaterialTheme.colorScheme.primary.copy(alpha = .18f)), contentAlignment = Alignment.Center) {
             ArtworkImage(track, Modifier.fillMaxSize())
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) { Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("${track.artist}  ·  ${track.album}", maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium) }
+        IconButton(onClick = onPlayNext) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Lire ensuite") }
         IconButton(onClick = onToggleFavorite) { Icon(if (favorite) androidx.compose.material.icons.Icons.Default.Favorite else Icons.Default.FavoriteBorder, "Favori", tint = if (favorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }

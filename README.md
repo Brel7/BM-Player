@@ -11,7 +11,9 @@ BM Player lit les fichiers audio déjà présents sur l’appareil. Le projet vi
 - Lecture en arrière-plan avec Media3 et `MediaSessionService`.
 - Contrôles notification, écran verrouillé et Bluetooth/AVRCP.
 - Recherche dynamique dans les titres, artistes, albums et genres, avec lecture de tous les résultats.
-- Queue de lecture, lecture aléatoire, répétition et navigation par gestes.
+- Reprise de la dernière queue et position après fermeture, lecture aléatoire et répétition.
+- Action « Lire ensuite » avec ordre conservé pour les sélections successives.
+- Rescan automatique lorsque MediaStore signale l’arrivée de nouveaux fichiers audio.
 - Crossfade réglable jusqu’à 15 secondes.
 - Pochettes intégrées et pochettes MediaStore, avec choix de forme.
 - Favoris persistants.
@@ -19,7 +21,7 @@ BM Player lit les fichiers audio déjà présents sur l’appareil. Le projet vi
 - Minuteur d’arrêt avec presets et durée personnalisée.
 - Égaliseur et effets audio Android disponibles selon l’appareil.
 - Thème clair/sombre, roue de couleur et formes de pochettes personnalisables.
-- Widget Glance de base.
+- Widget Glance affichant la piste courante et ouvrant le lecteur.
 - Interface française et anglaise pour la navigation et les réglages principaux.
 
 ## Stack technique
