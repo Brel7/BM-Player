@@ -2,10 +2,12 @@ package com.bmplayer
 
 import android.Manifest
 import android.content.ComponentName
+import android.content.Context
 import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.graphics.Color as AndroidColor
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.os.Bundle
@@ -17,6 +19,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -36,6 +45,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +58,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
@@ -54,10 +66,13 @@ import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -72,17 +87,19 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -98,6 +115,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import com.bmplayer.data.local.FavoriteDao
 import com.bmplayer.data.local.FavoriteEntity
@@ -114,6 +132,7 @@ import com.bmplayer.playback.PlaybackCommands
 import com.bmplayer.playback.PlaybackService
 import com.bmplayer.ui.LibraryViewModel
 import com.bmplayer.ui.theme.BMPlayerTheme
+import com.bmplayer.ui.theme.LocalLiquidGlass
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -123,8 +142,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlin.math.atan2
+import kotlin.math.abs
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
+import kotlin.math.sin
+import kotlin.math.PI
+import com.bmplayer.ui.theme.liquidGlassSurface
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -132,7 +154,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var preferencesStore: UserPreferencesStore
     @Inject lateinit var historyDao: HistoryDao
     @Inject lateinit var playlistDao: PlaylistDao
-        @Inject lateinit var favoriteDao: FavoriteDao
+    @Inject lateinit var favoriteDao: FavoriteDao
     private val libraryViewModel by viewModels<LibraryViewModel>()
     private var controller: MediaController? = null
     private var sleepTimerJob: Job? = null
@@ -141,6 +163,7 @@ class MainActivity : ComponentActivity() {
     private var playbackPlaying by mutableStateOf(false)
     private var shuffleEnabledState by mutableStateOf(false)
     private var repeatModeState by mutableStateOf(androidx.media3.common.Player.REPEAT_MODE_OFF)
+    private var effectsSupported by mutableStateOf<Boolean?>(null)
     private var playbackTicker: Job? = null
     private var currentTrackId by mutableStateOf<Long?>(null)
     private var sleepTimerRemainingMs by mutableStateOf(0L)
@@ -167,10 +190,20 @@ class MainActivity : ComponentActivity() {
             controller = controllerFuture.get()
             lifecycleScope.launch {
                 val savedCrossfade = preferencesStore.preferences.first().crossfadeSeconds
+                val savedPreferences = preferencesStore.preferences.first()
                 controller?.sendCustomCommand(
                     SessionCommand(PlaybackCommands.SET_CROSSFADE, Bundle().apply { putInt(PlaybackCommands.SECONDS, savedCrossfade) }),
                     Bundle.EMPTY
                 )
+                val effectsFuture = controller?.sendCustomCommand(
+                    SessionCommand(PlaybackCommands.SET_EFFECTS_ENABLED, Bundle.EMPTY),
+                    Bundle().apply { putBoolean(PlaybackCommands.ENABLED, savedPreferences.effectsEnabled) }
+                )
+                effectsFuture?.addListener({
+                    effectsSupported = runCatching { effectsFuture.get().resultCode == SessionResult.RESULT_SUCCESS }.getOrDefault(false)
+                }, ContextCompat.getMainExecutor(this@MainActivity))
+                setEffectStrength(PlaybackCommands.SET_BASS_STRENGTH, savedPreferences.bassStrength)
+                setEffectStrength(PlaybackCommands.SET_VIRTUALIZER_STRENGTH, savedPreferences.virtualizerStrength)
             }
             restorePlaybackState()
             playbackTicker = lifecycleScope.launch {
@@ -203,19 +236,27 @@ class MainActivity : ComponentActivity() {
             }
         }, ContextCompat.getMainExecutor(this))
         setContent {
+            val preferences = preferencesStore.preferences.collectAsStateWithLifecycle(UserPreferences()).value
+            val libraryTracks = libraryViewModel.tracks.collectAsStateWithLifecycle().value
+            val playingArtworkTrack = libraryTracks.firstOrNull { it.id == currentTrackId }
+                val albumAccent by produceState(preferences.defaultAccent(), playingArtworkTrack?.id) {
+                value = playingArtworkTrack?.let { extractAlbumAccent(this@MainActivity, it) } ?: preferences.defaultAccent()
+            }
             BMPlayerTheme(
-                darkTheme = preferencesStore.preferences.collectAsStateWithLifecycle(UserPreferences()).value.darkTheme,
-                accent = preferencesStore.preferences.collectAsStateWithLifecycle(UserPreferences()).value.accentColor()
+                darkTheme = preferences.darkTheme,
+                accent = albumAccent,
+                liquidGlass = preferences.liquidGlass
             ) {
                 BMPlayerApp(
-                    tracks = libraryViewModel.tracks.collectAsStateWithLifecycle().value,
+                    tracks = libraryTracks,
                     favoriteIds = favoriteDao.observeIds().collectAsStateWithLifecycle(emptyList()).value.toSet(),
                     playlists = playlistDao.observePlaylists().collectAsStateWithLifecycle(emptyList()).value,
                     playlistTrackIds = playlistTrackIds,
-                    preferences = preferencesStore.preferences.collectAsStateWithLifecycle(UserPreferences()).value,
+                    preferences = preferences,
                     onRefresh = libraryViewModel::refresh,
                     onPlay = ::playTrack,
                     onPlayNext = ::playNext,
+                    onSetSortOrder = { value -> lifecycleScope.launch { preferencesStore.setSortOrder(value) } },
                     onToggleFavorite = ::toggleFavorite,
                     onPlayAll = ::playAll,
                     isPlaying = playbackPlaying,
@@ -233,10 +274,11 @@ class MainActivity : ComponentActivity() {
                     onCycleRepeat = { cycleRepeatMode() },
                     sleepTimerRemainingMs = sleepTimerRemainingMs,
                     onToggleDarkTheme = { enabled -> lifecycleScope.launch { preferencesStore.setDarkTheme(enabled) } },
-                    onAccentChange = { accent -> lifecycleScope.launch { preferencesStore.setAccent(accent, accent) } },
-                    onResetTheme = { lifecycleScope.launch { preferencesStore.resetTheme() } },
                     onSleepTimer = ::startSleepTimer,
                     onEffectsEnabled = ::setEffectsEnabled,
+                    effectsSupported = effectsSupported,
+                    onBassStrength = { value -> lifecycleScope.launch { preferencesStore.setBassStrength(value); setEffectStrength(PlaybackCommands.SET_BASS_STRENGTH, value) } },
+                    onVirtualizerStrength = { value -> lifecycleScope.launch { preferencesStore.setVirtualizerStrength(value); setEffectStrength(PlaybackCommands.SET_VIRTUALIZER_STRENGTH, value) } },
                     onCreatePlaylist = { name -> lifecycleScope.launch { playlistDao.create(PlaylistEntity(name = name)) } },
                     onDeletePlaylist = { id -> lifecycleScope.launch { playlistDao.delete(id) } },
                     onAddToPlaylist = { playlistId, trackId ->
@@ -257,6 +299,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onArtworkShapeChange = { shape -> lifecycleScope.launch { preferencesStore.setArtworkShape(shape) } },
+                    onLiquidGlassChange = { enabled -> lifecycleScope.launch { preferencesStore.setLiquidGlass(enabled) } },
                     onLanguageChange = { language -> lifecycleScope.launch { preferencesStore.setLanguage(language) } }
                 )
             }
@@ -411,9 +454,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setEffectsEnabled(enabled: Boolean) {
-        controller?.sendCustomCommand(
+        lifecycleScope.launch { preferencesStore.setEffectsEnabled(enabled) }
+        val future = controller?.sendCustomCommand(
             SessionCommand(PlaybackCommands.SET_EFFECTS_ENABLED, Bundle.EMPTY),
             Bundle().apply { putBoolean(PlaybackCommands.ENABLED, enabled) }
+        )
+        future?.addListener({
+            effectsSupported = runCatching { future.get().resultCode == SessionResult.RESULT_SUCCESS }.getOrDefault(false)
+            if (effectsSupported != true) lifecycleScope.launch { preferencesStore.setEffectsEnabled(false) }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun setEffectStrength(command: String, strength: Int) {
+        controller?.sendCustomCommand(
+            SessionCommand(command, Bundle.EMPTY),
+            Bundle().apply { putInt(PlaybackCommands.STRENGTH, strength) }
         )
     }
 
@@ -447,15 +502,59 @@ private fun Track.toMediaItem() = MediaItem.Builder()
     .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setArtist(artist).setAlbumTitle(album).setArtworkUri(artworkUri).build())
     .build()
 
-private fun UserPreferences.accentColor(): androidx.compose.ui.graphics.Color = runCatching {
-    androidx.compose.ui.graphics.Color(AndroidColor.parseColor(if (darkTheme) accentDark else accentLight))
-}.getOrDefault(androidx.compose.ui.graphics.Color(0xFFB9750F))
+private fun UserPreferences.defaultAccent(): Color =
+    if (darkTheme) Color(0xFFE8A33D) else Color(0xFFB9750F)
 
-    private fun artworkShape(value: String): RoundedCornerShape = when (value) {
-        "round" -> RoundedCornerShape(50)
-        "square" -> RoundedCornerShape(0)
-        else -> RoundedCornerShape(12)
+private suspend fun extractAlbumAccent(context: Context, track: Track): Color? = withContext(Dispatchers.IO) {
+    val embeddedBitmap = runCatching {
+        MediaMetadataRetriever().use { retriever ->
+            retriever.setDataSource(context, track.uri)
+            retriever.embeddedPicture?.let { data -> BitmapFactory.decodeByteArray(data, 0, data.size) }
+        }
+    }.getOrNull()
+    val artwork = embeddedBitmap ?: track.artworkUri?.let { uri ->
+        runCatching { context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream) }.getOrNull()
+    } ?: return@withContext null
+
+    val scale = 32f / maxOf(artwork.width, artwork.height).coerceAtLeast(1)
+    val sample = Bitmap.createScaledBitmap(
+        artwork,
+        (artwork.width * scale).toInt().coerceAtLeast(1),
+        (artwork.height * scale).toInt().coerceAtLeast(1),
+        true
+    )
+    val pixels = IntArray(sample.width * sample.height)
+    sample.getPixels(pixels, 0, sample.width, 0, 0, sample.width, sample.height)
+    var hueX = 0.0
+    var hueY = 0.0
+    var saturationTotal = 0.0
+    var valueTotal = 0.0
+    var weightTotal = 0.0
+    val hsv = FloatArray(3)
+    pixels.forEach { pixel ->
+        AndroidColor.colorToHSV(pixel, hsv)
+        if (hsv[1] > 0.18f && hsv[2] in 0.16f..0.96f) {
+            val weight = hsv[1] * (1f - kotlin.math.abs(hsv[2] - 0.62f))
+            val angle = Math.toRadians(hsv[0].toDouble())
+            hueX += kotlin.math.cos(angle) * weight
+            hueY += sin(angle) * weight
+            saturationTotal += hsv[1] * weight
+            valueTotal += hsv[2] * weight
+            weightTotal += weight
+        }
     }
+    if (weightTotal <= 0.0) return@withContext null
+    val hue = ((Math.toDegrees(atan2(hueY, hueX)) + 360.0) % 360.0).toFloat()
+    val saturation = (saturationTotal / weightTotal).toFloat().coerceIn(0.45f, 0.85f)
+    val value = (valueTotal / weightTotal).toFloat().coerceIn(0.55f, 0.88f)
+    Color(AndroidColor.HSVToColor(floatArrayOf(hue, saturation, value)))
+}
+
+private fun artworkShape(value: String): RoundedCornerShape = when (value) {
+    "round" -> RoundedCornerShape(50)
+    "square" -> RoundedCornerShape(0)
+    else -> RoundedCornerShape(12)
+}
 
 @Composable
 private fun BMPlayerApp(
@@ -466,6 +565,7 @@ private fun BMPlayerApp(
     onRefresh: () -> Unit,
     onPlay: (Track) -> Unit,
     onPlayNext: (Track) -> Unit,
+    onSetSortOrder: (String) -> Unit,
     onToggleFavorite: (Track) -> Unit,
     onPlayAll: (List<Track>) -> Unit,
     isPlaying: Boolean,
@@ -483,50 +583,146 @@ private fun BMPlayerApp(
     onCycleRepeat: () -> Unit,
     sleepTimerRemainingMs: Long,
     onToggleDarkTheme: (Boolean) -> Unit,
-    onAccentChange: (String) -> Unit,
-    onResetTheme: () -> Unit,
     onSleepTimer: (Int) -> Unit,
     onEffectsEnabled: (Boolean) -> Unit,
+    effectsSupported: Boolean?,
+    onBassStrength: (Int) -> Unit,
+    onVirtualizerStrength: (Int) -> Unit,
     onCreatePlaylist: (String) -> Unit,
     playlistTrackIds: Set<Long>,
     onDeletePlaylist: (Long) -> Unit,
-    onAddToPlaylist: (Long, Long) -> Unit
-    ,onPlayPlaylist: (PlaylistEntity) -> Unit
-    ,onSelectPlaylist: (Long) -> Unit
-    ,onCrossfadeChange: (Int) -> Unit
-    ,onArtworkShapeChange: (String) -> Unit
-    ,onLanguageChange: (String) -> Unit
+    onAddToPlaylist: (Long, Long) -> Unit,
+    onPlayPlaylist: (PlaylistEntity) -> Unit,
+    onSelectPlaylist: (Long) -> Unit,
+    onCrossfadeChange: (Int) -> Unit,
+    onArtworkShapeChange: (String) -> Unit,
+    onLanguageChange: (String) -> Unit,
+    onLiquidGlassChange: (Boolean) -> Unit
 ) {
     var selectedTrack by remember { mutableStateOf<Track?>(null) }
     var tab by remember { mutableStateOf(0) }
     val activeTrack = tracks.firstOrNull { it.id == currentTrackId } ?: selectedTrack
     val english = preferences.language == "en"
-    Scaffold(bottomBar = {
-        Surface(Modifier.padding(12.dp), shape = RoundedCornerShape(28.dp), tonalElevation = 8.dp, shadowElevation = 8.dp) {
-        NavigationBar {
-            NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.LibraryMusic, null) }, label = { Text(if (english) "Library" else "Bibliothèque") })
-            NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text(if (english) "Playing" else "Lecture") })
-            NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text(if (english) "Settings" else "Réglages") })
-            NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = { Icon(Icons.Default.Favorite, null) }, label = { Text(if (english) "Favorites" else "Favoris") })
-            NavigationBarItem(selected = tab == 4, onClick = { tab = 4 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text("Playlists") })
-        }
+    val appBackdrop = if (preferences.liquidGlass) {
+        Brush.linearGradient(
+            listOf(
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.20f),
+                MaterialTheme.colorScheme.background,
+                Color(0xFF70C1B3).copy(alpha = 0.13f),
+                MaterialTheme.colorScheme.background
+            )
+        )
+    } else {
+        Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.background))
+    }
+    Scaffold(
+        modifier = Modifier.fillMaxSize().background(appBackdrop),
+        containerColor = Color.Transparent,
+        bottomBar = {
+        if (currentTrackId != null && tab != 1 && activeTrack != null) {
+            MiniPlayerDock(
+                track = activeTrack,
+                isPlaying = isPlaying,
+                artworkShapeValue = preferences.artworkShape,
+                english = english,
+                onOpen = { tab = 1 },
+                onNavigate = { tab = it },
+                onPrevious = onPrevious,
+                onTogglePlayback = if (isPlaying) onPause else onResume,
+                onNext = onNext
+            )
+        } else {
+            Surface(
+                Modifier.padding(12.dp).liquidGlassSurface(RoundedCornerShape(28.dp)),
+                shape = RoundedCornerShape(28.dp),
+                color = if (preferences.liquidGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp,
+                shadowElevation = 8.dp
+            ) {
+                NavigationBar {
+                    NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.LibraryMusic, null) }, label = { Text(if (english) "Library" else "Bibliothèque") })
+                    NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text(if (english) "Playing" else "Lecture") })
+                    NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text(if (english) "Settings" else "Réglages") })
+                    NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = { Icon(Icons.Default.Favorite, null) }, label = { Text(if (english) "Favorites" else "Favoris") })
+                    NavigationBarItem(selected = tab == 4, onClick = { tab = 4 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text("Playlists") })
+                }
+            }
         }
     }) { padding ->
-        if (tab == 0) LibraryScreen(tracks, favoriteIds, currentTrackId, selectedTrack, preferences.artworkShape, onRefresh, onPlay, onPlayNext, onToggleFavorite, onPlayAll, { selectedTrack = it }, Modifier.padding(padding))
-        else if (tab == 1) NowPlayingScreen(activeTrack, preferences.artworkShape, isPlaying, playbackPositionMs, playbackDurationMs, onSeek, onPause, onResume, onNext, onPrevious, shuffleEnabled, repeatMode, onToggleShuffle, onCycleRepeat, { tab = 0 }, Modifier.padding(padding))
-        else if (tab == 2) SettingsScreen(preferences, onToggleDarkTheme, onAccentChange, onResetTheme, onEffectsEnabled, sleepTimerRemainingMs, onSleepTimer, onCrossfadeChange, onArtworkShapeChange, onLanguageChange, Modifier.padding(padding))
+        if (tab == 0) LibraryScreen(tracks, favoriteIds, currentTrackId, selectedTrack, preferences.artworkShape, preferences.sortOrder, onSetSortOrder, onRefresh, onPlay, onPlayNext, onToggleFavorite, onPlayAll, { selectedTrack = it }, Modifier.padding(padding))
+        else if (tab == 1) NowPlayingScreen(activeTrack, activeTrack?.id in favoriteIds, preferences.artworkShape, isPlaying, playbackPositionMs, playbackDurationMs, onSeek, onPause, onResume, onNext, onPrevious, shuffleEnabled, repeatMode, onToggleShuffle, onCycleRepeat, { tab = 0 }, { activeTrack?.let(onToggleFavorite) }, Modifier.padding(padding))
+        else if (tab == 2) SettingsScreen(preferences, onToggleDarkTheme, onEffectsEnabled, effectsSupported, onBassStrength, onVirtualizerStrength, sleepTimerRemainingMs, onSleepTimer, onCrossfadeChange, onArtworkShapeChange, onLanguageChange, onLiquidGlassChange, Modifier.padding(padding))
         else if (tab == 3) FavoritesScreen(tracks.filter { it.id in favoriteIds }, currentTrackId, preferences.artworkShape, { selectedTrack = it; onPlay(it) }, { onToggleFavorite(it) }, Modifier.padding(padding))
-        else if (tab == 4) PlaylistScreen(playlists, tracks, playlistTrackIds, preferences.artworkShape, onCreatePlaylist, onDeletePlaylist, onAddToPlaylist, onPlayPlaylist, onSelectPlaylist, Modifier.padding(padding))
         else PlaylistScreen(playlists, tracks, playlistTrackIds, preferences.artworkShape, onCreatePlaylist, onDeletePlaylist, onAddToPlaylist, onPlayPlaylist, onSelectPlaylist, Modifier.padding(padding))
     }
 }
 
 @Composable
-private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTrackId: Long?, selected: Track?, artworkShapeValue: String, onRefresh: () -> Unit, onPlay: (Track) -> Unit, onPlayNext: (Track) -> Unit, onToggleFavorite: (Track) -> Unit, onPlayAll: (List<Track>) -> Unit, onSelect: (Track) -> Unit, modifier: Modifier) {
+private fun MiniPlayerDock(
+    track: Track,
+    isPlaying: Boolean,
+    artworkShapeValue: String,
+    english: Boolean,
+    onOpen: () -> Unit,
+    onNavigate: (Int) -> Unit,
+    onPrevious: () -> Unit,
+    onTogglePlayback: () -> Unit,
+    onNext: () -> Unit
+) {
+    val dockShape = RoundedCornerShape(22.dp)
+    var destinationsExpanded by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .liquidGlassSurface(dockShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = if (LocalLiquidGlass.current) 0.62f else 0.98f), dockShape)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+            Box(Modifier.size(44.dp).clip(artworkShape(artworkShapeValue)).clickable(onClick = onOpen)) {
+            ArtworkImage(track, Modifier.fillMaxSize())
+        }
+        Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f).clickable(onClick = onOpen)) {
+            Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+            Text(track.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
+        IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, "Précédent") }
+        IconButton(onClick = onTogglePlayback) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (isPlaying) "Pause" else "Lecture") }
+        IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, "Suivant") }
+        Box {
+            IconButton(onClick = { destinationsExpanded = true }) { Icon(Icons.Default.MoreVert, "Navigation") }
+            DropdownMenu(expanded = destinationsExpanded, onDismissRequest = { destinationsExpanded = false }) {
+                listOf(
+                    0 to if (english) "Library" else "Bibliothèque",
+                    2 to if (english) "Settings" else "Réglages",
+                    3 to if (english) "Favorites" else "Favoris",
+                    4 to "Playlists"
+                ).forEach { (destination, title) ->
+                    DropdownMenuItem(text = { Text(title) }, onClick = { destinationsExpanded = false; onNavigate(destination) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTrackId: Long?, selected: Track?, artworkShapeValue: String, sortOrder: String, onSortOrderChange: (String) -> Unit, onRefresh: () -> Unit, onPlay: (Track) -> Unit, onPlayNext: (Track) -> Unit, onToggleFavorite: (Track) -> Unit, onPlayAll: (List<Track>) -> Unit, onSelect: (Track) -> Unit, modifier: Modifier) {
     var searchQuery by remember { mutableStateOf("") }
-    val matchingTracks = remember(tracks, searchQuery) {
+    var sortMenuExpanded by remember { mutableStateOf(false) }
+    var activeRailLetter by remember { mutableStateOf<Char?>(null) }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val orderedTracks = remember(tracks, sortOrder) {
+        when (sortOrder) {
+            "date" -> tracks.sortedByDescending { it.dateAdded }
+            "random" -> tracks.shuffled()
+            else -> tracks.sortedBy { it.title.lowercase() }
+        }
+    }
+    val matchingTracks = remember(orderedTracks, searchQuery) {
         val query = searchQuery.trim()
-        if (query.isEmpty()) tracks else tracks.filter { track ->
+        if (query.isEmpty()) orderedTracks else orderedTracks.filter { track ->
             listOf(track.title, track.artist, track.album, track.genre)
                 .any { value -> value.contains(query, ignoreCase = true) }
         }
@@ -540,6 +736,14 @@ private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTr
             }
             Row {
                 IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Actualiser") }
+                Box {
+                    IconButton(onClick = { sortMenuExpanded = true }) { Icon(Icons.AutoMirrored.Filled.Sort, "Trier la bibliothèque") }
+                    DropdownMenu(expanded = sortMenuExpanded, onDismissRequest = { sortMenuExpanded = false }) {
+                        DropdownMenuItem(text = { Text("Ordre alphabétique") }, onClick = { onSortOrderChange("title"); sortMenuExpanded = false })
+                        DropdownMenuItem(text = { Text("Date d’ajout") }, onClick = { onSortOrderChange("date"); sortMenuExpanded = false })
+                        DropdownMenuItem(text = { Text("Aléatoire") }, onClick = { onSortOrderChange("random"); sortMenuExpanded = false })
+                    }
+                }
                 IconButton(onClick = { onPlayAll(matchingTracks) }, enabled = matchingTracks.isNotEmpty()) { Icon(Icons.Default.PlayArrow, if (searchQuery.isBlank()) "Lire toute la bibliothèque" else "Lire tous les résultats") }
             }
         }
@@ -573,8 +777,55 @@ private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTr
         if (tracks.isEmpty()) EmptyLibrary()
         else if (matchingTracks.isEmpty()) {
             Text("Aucun morceau ne correspond à « $searchQuery ».", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(matchingTracks, key = { it.id }) { track -> TrackRow(track, selected == track || currentTrackId == track.id, favoriteIds.contains(track.id), artworkShapeValue, { onSelect(track); onPlay(track) }, { onToggleFavorite(track) }, { onPlayNext(track) }) }
+        } else Row(Modifier.fillMaxSize()) {
+            LazyColumn(Modifier.weight(1f), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(matchingTracks, key = { it.id }) { track -> TrackRow(track, selected == track || currentTrackId == track.id, favoriteIds.contains(track.id), artworkShapeValue, { onSelect(track); onPlay(track) }, { onToggleFavorite(track) }, { onPlayNext(track) }) }
+            }
+            if (searchQuery.isBlank() && matchingTracks.size > 20) {
+                Column(
+                    Modifier.width(30.dp).fillMaxHeight().pointerInput(matchingTracks) {
+                        fun selectAt(y: Float) {
+                            val letterIndex = (y / size.height * 26).toInt().coerceIn(0, 25)
+                            val letter = ('A'.code + letterIndex).toChar()
+                            activeRailLetter = letter
+                            val targetIndex = matchingTracks.indexOfFirst { it.title.firstOrNull()?.uppercaseChar() == letter }
+                            if (targetIndex >= 0) scope.launch { listState.scrollToItem(targetIndex) }
+                        }
+                        detectDragGestures(
+                            onDragStart = { selectAt(it.y) },
+                            onDrag = { change, _ -> change.consume(); selectAt(change.position.y) },
+                            onDragEnd = { activeRailLetter = null },
+                            onDragCancel = { activeRailLetter = null }
+                        )
+                    },
+                    verticalArrangement = Arrangement.SpaceEvenly,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    ('A'..'Z').forEachIndexed { index, letter ->
+                        val distance = activeRailLetter?.let { abs(index - (it - 'A')) } ?: Int.MAX_VALUE
+                        val curve = if (distance <= 5) (1f - distance / 6f) else 0f
+                        Box(
+                            Modifier.weight(1f).fillMaxWidth().clickable {
+                                activeRailLetter = letter
+                                val targetIndex = matchingTracks.indexOfFirst { it.title.firstOrNull()?.uppercaseChar() == letter }
+                                if (targetIndex >= 0) scope.launch {
+                                    listState.animateScrollToItem(targetIndex)
+                                    delay(350L)
+                                    if (activeRailLetter == letter) activeRailLetter = null
+                                }
+                            },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                letter.toString(),
+                                modifier = Modifier.offset(x = (-curve * 9f).dp),
+                                color = if (activeRailLetter == letter) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = if (activeRailLetter == letter) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -610,21 +861,25 @@ private fun EmptyLibrary() {
 
 @Composable
 private fun TrackRow(track: Track, selected: Boolean, favorite: Boolean, artworkShapeValue: String, onClick: () -> Unit, onToggleFavorite: () -> Unit, onPlayNext: () -> Unit = {}) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .12f) else Color.Transparent).clickable(onClick = onClick).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+    val rowShape = RoundedCornerShape(if (LocalLiquidGlass.current) 14.dp else 4.dp)
+    Row(Modifier.fillMaxWidth().clip(rowShape).background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .14f) else Color.Transparent).liquidGlassSurface(rowShape).clickable(onClick = onClick).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(52.dp).clip(artworkShape(artworkShapeValue)).background(MaterialTheme.colorScheme.primary.copy(alpha = .18f)), contentAlignment = Alignment.Center) {
             ArtworkImage(track, Modifier.fillMaxSize())
         }
         Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) { Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("${track.artist}  ·  ${track.album}", maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium) }
+        Column(Modifier.weight(1f)) {
+            Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+            Text(if (selected) "EN COURS DE LECTURE" else "${track.artist}  ·  ${track.album}", maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
         IconButton(onClick = onPlayNext) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Lire ensuite") }
         IconButton(onClick = onToggleFavorite) { Icon(if (favorite) androidx.compose.material.icons.Icons.Default.Favorite else Icons.Default.FavoriteBorder, "Favori", tint = if (favorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 
 @Composable
-private fun NowPlayingScreen(track: Track?, artworkShapeValue: String, isPlaying: Boolean, playbackPositionMs: Long, playbackDurationMs: Long, onSeek: (Long) -> Unit, onPause: () -> Unit, onResume: () -> Unit, onNext: () -> Unit, onPrevious: () -> Unit, shuffleEnabled: Boolean, repeatMode: Int, onToggleShuffle: () -> Unit, onCycleRepeat: () -> Unit, onOpenLibrary: () -> Unit, modifier: Modifier) {
+private fun NowPlayingScreen(track: Track?, isFavorite: Boolean, artworkShapeValue: String, isPlaying: Boolean, playbackPositionMs: Long, playbackDurationMs: Long, onSeek: (Long) -> Unit, onPause: () -> Unit, onResume: () -> Unit, onNext: () -> Unit, onPrevious: () -> Unit, shuffleEnabled: Boolean, repeatMode: Int, onToggleShuffle: () -> Unit, onCycleRepeat: () -> Unit, onOpenLibrary: () -> Unit, onToggleFavorite: () -> Unit, modifier: Modifier) {
     var dragOffset by remember { mutableStateOf(0f) }
-    Column(modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("LECTURE EN COURS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(34.dp))
         Box(
@@ -634,6 +889,7 @@ private fun NowPlayingScreen(track: Track?, artworkShapeValue: String, isPlaying
                 .offset { IntOffset(dragOffset.roundToInt(), 0) }
                 .clip(artworkShape(artworkShapeValue))
                 .background(MaterialTheme.colorScheme.primary.copy(alpha = .18f))
+                .liquidGlassSurface(artworkShape(artworkShapeValue))
                 .pointerInput(Unit) {
                     var totalDrag = Offset.Zero
                     detectDragGestures(
@@ -656,11 +912,28 @@ private fun NowPlayingScreen(track: Track?, artworkShapeValue: String, isPlaying
                 },
             contentAlignment = Alignment.Center
         ) {
-            if (track != null) ArtworkImage(track, Modifier.fillMaxSize()) else Icon(Icons.Default.LibraryMusic, null, Modifier.size(90.dp), tint = MaterialTheme.colorScheme.primary)
+            AnimatedContent(
+                targetState = track,
+                transitionSpec = {
+                    (fadeIn(tween(360)) + slideInHorizontally(tween(360)) { it / 5 }) togetherWith
+                        (fadeOut(tween(260)) + slideOutHorizontally(tween(260)) { -it / 6 })
+                },
+                label = "album-art-transition"
+            ) { displayedTrack ->
+                if (displayedTrack != null) ArtworkImage(displayedTrack, Modifier.fillMaxSize())
+                else Icon(Icons.Default.LibraryMusic, null, Modifier.size(90.dp), tint = MaterialTheme.colorScheme.primary)
+            }
         }
         Spacer(Modifier.height(24.dp))
-        Text(track?.title ?: "Sélectionnez un morceau", style = MaterialTheme.typography.titleLarge)
-        Text(track?.artist ?: "", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(track?.title ?: "Sélectionnez un morceau", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(track?.artist ?: "", color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                IconButton(onClick = onToggleFavorite, enabled = track != null) {
+                    Icon(if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, "Favori", tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         Spacer(Modifier.height(25.dp))
         Slider(
             value = playbackPositionMs.toFloat(),
@@ -671,11 +944,11 @@ private fun NowPlayingScreen(track: Track?, artworkShapeValue: String, isPlaying
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(formatDuration(playbackPositionMs), style = MaterialTheme.typography.labelMedium); Text(formatDuration(if (playbackDurationMs > 0) playbackDurationMs else track?.durationMs ?: 0), style = MaterialTheme.typography.labelMedium) }
         AnimatedWaveform(isPlaying)
         Spacer(Modifier.height(18.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             IconButton(onClick = onToggleShuffle) { Icon(Icons.Default.Shuffle, "Aléatoire", tint = if (shuffleEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) }
-            IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, "Précédent", Modifier.size(32.dp)) }
-            Surface(Modifier.size(68.dp), shape = androidx.compose.foundation.shape.CircleShape, color = MaterialTheme.colorScheme.primary) { IconButton(onClick = if (isPlaying) onPause else onResume) { Icon(imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Lecture", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(34.dp)) } }
-            IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, "Suivant", Modifier.size(32.dp)) }
+            IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, "Précédent", Modifier.size(28.dp)) }
+            Surface(Modifier.size(60.dp), shape = androidx.compose.foundation.shape.CircleShape, color = MaterialTheme.colorScheme.primary) { IconButton(onClick = if (isPlaying) onPause else onResume) { Icon(imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Lecture", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(32.dp)) } }
+            IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, "Suivant", Modifier.size(28.dp)) }
             IconButton(onClick = onCycleRepeat) { Icon(if (repeatMode == androidx.media3.common.Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat, "Répétition", tint = if (repeatMode == androidx.media3.common.Player.REPEAT_MODE_OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary) }
         }
     }
@@ -685,35 +958,56 @@ private fun NowPlayingScreen(track: Track?, artworkShapeValue: String, isPlaying
 private fun SettingsScreen(
     preferences: UserPreferences,
     onToggleDarkTheme: (Boolean) -> Unit,
-    onAccentChange: (String) -> Unit,
-    onResetTheme: () -> Unit,
     onEffectsEnabled: (Boolean) -> Unit,
+    effectsSupported: Boolean?,
+    onBassStrength: (Int) -> Unit,
+    onVirtualizerStrength: (Int) -> Unit,
     sleepTimerRemainingMs: Long,
     onSleepTimer: (Int) -> Unit,
     onCrossfadeChange: (Int) -> Unit,
     onArtworkShapeChange: (String) -> Unit,
     onLanguageChange: (String) -> Unit,
+    onLiquidGlassChange: (Boolean) -> Unit,
     modifier: Modifier
 ) {
-    var effectsEnabled by remember { mutableStateOf(false) }
+    var bassStrength by remember(preferences.bassStrength) { mutableFloatStateOf(preferences.bassStrength.toFloat()) }
+    var virtualizerStrength by remember(preferences.virtualizerStrength) { mutableFloatStateOf(preferences.virtualizerStrength.toFloat()) }
     var customTimerMinutes by remember { mutableStateOf("") }
     var showAppearance by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     val english = preferences.language == "en"
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Text(if (english) "Settings" else "Réglages", style = MaterialTheme.typography.headlineLarge)
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { Text(if (english) "Dark mode" else "Mode sombre"); Text(if (english) "Follow the selected theme" else "Suivre le thème choisi", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Switch(checked = preferences.darkTheme, onCheckedChange = onToggleDarkTheme)
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) { Text(if (english) "Audio effects" else "Effets audio"); Text(if (english) "Equalizer, bass boost and spatial audio" else "Égaliseur, bass boost et spatialisation", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            Switch(checked = effectsEnabled, onCheckedChange = { effectsEnabled = it; onEffectsEnabled(it) })
+        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(if (english) "Audio effects" else "Effets audio")
+                Text(
+                    when (effectsSupported) {
+                        true -> if (english) "Supported on this device" else "Disponibles sur cet appareil"
+                        false -> if (english) "No compatible effects found" else "Aucun effet compatible détecté"
+                        null -> if (english) "Checking device support…" else "Vérification de l’appareil…"
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(checked = preferences.effectsEnabled, onCheckedChange = onEffectsEnabled, enabled = effectsSupported != false)
         }
-        Row(Modifier.fillMaxWidth().clickable { showAppearance = !showAppearance }, verticalAlignment = Alignment.CenterVertically) { Text(if (english) "Appearance" else "Apparence", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text(if (showAppearance) "−" else "+", style = MaterialTheme.typography.titleLarge) }
+        if (preferences.effectsEnabled && effectsSupported == true) {
+            Text(if (english) "Bass boost" else "Amplification des basses")
+            Slider(value = bassStrength, onValueChange = { bassStrength = it }, valueRange = 0f..1000f, onValueChangeFinished = { onBassStrength(bassStrength.roundToInt()) })
+            Text(if (english) "Virtualizer" else "Spatialisation")
+            Slider(value = virtualizerStrength, onValueChange = { virtualizerStrength = it }, valueRange = 0f..1000f, onValueChangeFinished = { onVirtualizerStrength(virtualizerStrength.roundToInt()) })
+        }
+        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAppearance = !showAppearance }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "Appearance" else "Apparence", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text(if (showAppearance) "−" else "+", style = MaterialTheme.typography.titleLarge) }
         if (showAppearance) {
-            Text(if (english) "Accent color" else "Couleur d'accent", style = MaterialTheme.typography.titleMedium)
-            ColorWheel(onColorSelected = { color -> onAccentChange("#${color.toArgb().and(0xFFFFFF).toString(16).padStart(6, '0').uppercase()}") })
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (english) "Liquid Glass surfaces" else "Surfaces Liquid Glass", Modifier.weight(1f))
+                Switch(checked = preferences.liquidGlass, onCheckedChange = onLiquidGlassChange)
+            }
             Text(if (english) "Artwork shape" else "Forme des pochettes", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("round" to if (english) "Round" else "Ronde", "rounded" to if (english) "Rounded" else "Arrondie", "square" to if (english) "Square" else "Carrée").forEach { (value, label) -> Button(onClick = { onArtworkShapeChange(value) }) { Text(label) } }
@@ -722,7 +1016,6 @@ private fun SettingsScreen(
             Slider(value = preferences.crossfadeSeconds.toFloat(), onValueChange = { onCrossfadeChange(it.roundToInt()) }, valueRange = 0f..15f, steps = 14)
             Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) { Text("0s"); Text("15s") }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = { onLanguageChange("fr") }) { Text("Français") }; Button(onClick = { onLanguageChange("en") }) { Text("English") } }
-            Button(onClick = onResetTheme) { Text(if (english) "Reset default theme" else "Réinitialiser au thème par défaut") }
         }
         Text(if (english) "Sleep timer" else "Minuteur", style = MaterialTheme.typography.titleMedium)
         Text(if (sleepTimerRemainingMs > 0) (if (english) "Active: ${formatDuration(sleepTimerRemainingMs)} remaining" else "Actif : ${formatDuration(sleepTimerRemainingMs)} restantes") else (if (english) "No active timer" else "Aucun minuteur actif"), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -734,41 +1027,13 @@ private fun SettingsScreen(
             Button(onClick = { customTimerMinutes.toIntOrNull()?.takeIf { it > 0 }?.let(onSleepTimer) }) { Text(if (english) "Start" else "Démarrer") }
         }
         if (sleepTimerRemainingMs > 0) Button(onClick = { onSleepTimer(0) }) { Text(if (english) "Stop timer" else "Arrêter le minuteur") }
-        Row(Modifier.fillMaxWidth().clickable { showAbout = !showAbout }, verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version 1.0.0 · 2026") }
+        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version 1.1.3 · 2026") }
         if (showAbout) {
             Text("BM Player · lecteur local sans publicité ni suivi.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Politique de confidentialité\nAucune donnée personnelle, aucun tracker et aucune publicité. La musique reste sur votre appareil.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Conditions d'utilisation\nBM Player est fourni pour la lecture de contenus audio que vous possédez ou êtes autorisé à utiliser.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Licence open source\nLe code de BM Player est distribué sous licence MIT.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-    }
-}
-
-@Composable
-private fun ColorWheel(onColorSelected: (Color) -> Unit) {
-    Canvas(
-        Modifier
-            .size(220.dp)
-            .pointerInput(Unit) {
-                fun updateColor(point: Offset) {
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    val dx = point.x - center.x
-                    val dy = point.y - center.y
-                    val radius = sqrt(dx * dx + dy * dy).coerceAtMost(center.x)
-                    val hue = ((Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())) + 360.0) % 360.0).toFloat()
-                    val saturation = (radius / center.x).coerceIn(0f, 1f)
-                    val hsv = floatArrayOf(hue, saturation, 1f)
-                    onColorSelected(Color(AndroidColor.HSVToColor(hsv)))
-                }
-                detectDragGestures(
-                    onDragStart = ::updateColor,
-                    onDrag = { change, _ -> change.consume(); updateColor(change.position) }
-                )
-            }
-    ) {
-        drawCircle(Brush.sweepGradient(listOf(Color.Red, Color.Yellow, Color.Green, Color.Cyan, Color.Blue, Color.Magenta, Color.Red)), radius = size.minDimension / 2f)
-        drawCircle(Brush.radialGradient(listOf(Color.White.copy(alpha = .95f), Color.Transparent), radius = size.minDimension / 2f), radius = size.minDimension / 2f)
-        drawCircle(Color.White.copy(alpha = .95f), radius = size.minDimension * .12f)
     }
 }
 
@@ -800,7 +1065,8 @@ private fun PlaylistScreen(
         } else {
             LazyColumn(Modifier.weight(if (selectedPlaylistId == null) 1f else 0.35f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(playlists, key = { it.id }) { playlist ->
-                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable { selectedPlaylistId = playlist.id; onSelectPlaylist(playlist.id) }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val playlistShape = RoundedCornerShape(if (LocalLiquidGlass.current) 14.dp else 4.dp)
+                    Row(Modifier.fillMaxWidth().clip(playlistShape).background(MaterialTheme.colorScheme.surfaceVariant).liquidGlassSurface(playlistShape).clickable { selectedPlaylistId = playlist.id; onSelectPlaylist(playlist.id) }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(playlist.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                         IconButton(onClick = { onPlayPlaylist(playlist) }) { Icon(Icons.Default.PlayArrow, "Lire la playlist") }
                         Button(onClick = { deleteCandidate = playlist }) { Text("Supprimer") }
@@ -862,19 +1128,33 @@ private fun ArtworkImage(track: Track, modifier: Modifier) {
 @Composable
 private fun AnimatedWaveform(isPlaying: Boolean) {
     val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "waveform")
-    Row(Modifier.fillMaxWidth().height(34.dp), horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-        repeat(32) { index ->
-            val animatedHeight by transition.animateFloat(
-                initialValue = 0.25f,
-                targetValue = 1f,
-                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-                    animation = androidx.compose.animation.core.tween(320 + index * 18),
-                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
-                ),
-                label = "bar-$index"
+    val waveformColor = MaterialTheme.colorScheme.primary
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * PI).toFloat(),
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = androidx.compose.animation.core.tween(2_400, easing = androidx.compose.animation.core.LinearEasing),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Restart
+        ),
+        label = "waveform-phase"
+    )
+    Canvas(Modifier.fillMaxWidth().height(22.dp)) {
+        val barCount = 52
+        val cellWidth = size.width / barCount
+        val strokeWidth = 2.dp.toPx()
+        repeat(barCount) { index ->
+            val base = sin(index * 0.48f)
+            val movement = if (isPlaying) sin(index * 0.72f + phase) else 0f
+            val normalized = (0.42f + base * 0.12f + movement * 0.18f).coerceIn(0.14f, 0.78f)
+            val barHeight = size.height * normalized
+            val centerX = cellWidth * (index + 0.5f)
+            drawLine(
+                color = waveformColor.copy(alpha = 0.32f + normalized * 0.36f),
+                start = Offset(centerX, (size.height - barHeight) / 2f),
+                end = Offset(centerX, (size.height + barHeight) / 2f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
             )
-            val height = if (isPlaying) animatedHeight else 0.45f
-            Box(Modifier.weight(1f).height((8 + height * 26).dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)))
         }
     }
 }

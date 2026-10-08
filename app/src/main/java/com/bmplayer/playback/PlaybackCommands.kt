@@ -5,4 +5,7 @@ object PlaybackCommands {
     const val ENABLED = "enabled"
     const val SET_CROSSFADE = "com.bmplayer.playback.SET_CROSSFADE"
     const val SECONDS = "seconds"
+    const val SET_BASS_STRENGTH = "com.bmplayer.playback.SET_BASS_STRENGTH"
+    const val SET_VIRTUALIZER_STRENGTH = "com.bmplayer.playback.SET_VIRTUALIZER_STRENGTH"
+    const val STRENGTH = "strength"
 }

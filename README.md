@@ -12,15 +12,18 @@ BM Player lit les fichiers audio déjà présents sur l’appareil. Le projet vi
 - Contrôles notification, écran verrouillé et Bluetooth/AVRCP.
 - Recherche dynamique dans les titres, artistes, albums et genres, avec lecture de tous les résultats.
 - Reprise de la dernière queue et position après fermeture, lecture aléatoire et répétition.
+- Mini-lecteur persistant avec commandes précédente, lecture/pause et suivante.
+- Clic sur la notification média pour rouvrir directement le lecteur.
 - Action « Lire ensuite » avec ordre conservé pour les sélections successives.
+- Tri alphabétique, par date d’ajout ou aléatoire, avec index latéral A-Z.
 - Rescan automatique lorsque MediaStore signale l’arrivée de nouveaux fichiers audio.
 - Crossfade réglable jusqu’à 15 secondes.
 - Pochettes intégrées et pochettes MediaStore, avec choix de forme.
 - Favoris persistants.
 - Playlists persistantes avec ajout, lecture et suppression confirmée.
 - Minuteur d’arrêt avec presets et durée personnalisée.
-- Égaliseur et effets audio Android disponibles selon l’appareil.
-- Thème clair/sombre, roue de couleur et formes de pochettes personnalisables.
+- Égaliseur, bass boost et spatialisation selon les effets exposés par l’appareil.
+- Thème clair/sombre, Liquid Glass sur les écrans, accent adapté à la pochette et formes personnalisables.
 - Widget Glance affichant la piste courante et ouvrant le lecteur.
 - Interface française et anglaise pour la navigation et les réglages principaux.
 
@@ -94,7 +97,7 @@ Consulter [LICENSE](LICENSE) pour la licence du code et la section À propos de 
 
 ## État du projet
 
-Version affichée : **1.0.0 · 2026**.
+Version affichée : **1.1.3 · 2026**.
 
 Le projet est en développement actif. Les fonctionnalités dépendant du matériel, notamment certains effets audio, le Bluetooth, les widgets et le crossfade, doivent être vérifiées sur un appareil Android réel. Des utilitaires de parsing LRC et M3U existent dans le code, mais l’import des paroles et l’import/export des playlists ne sont pas encore proposés dans un parcours utilisateur complet.
 

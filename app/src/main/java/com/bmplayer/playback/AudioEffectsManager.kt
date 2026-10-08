@@ -12,17 +12,17 @@ class AudioEffectsManager(audioSessionId: Int) {
     private val virtualizer = runCatching { Virtualizer(0, audioSessionId) }.getOrNull()
     private val loudnessEnhancer = runCatching { LoudnessEnhancer(audioSessionId) }.getOrNull()
     private val reverb = runCatching { PresetReverb(0, audioSessionId) }.getOrNull()
+    val hasAvailableEffects: Boolean
+        get() = listOf(equalizer, bassBoost, virtualizer, loudnessEnhancer, reverb).any { it != null }
 
     val bandCount: Int get() = equalizer?.numberOfBands?.toInt() ?: 0
     val bandRange: ShortArray get() = equalizer?.bandLevelRange ?: shortArrayOf(-1500, 1500)
     val presets: ShortArray get() = equalizer?.numberOfPresets?.let { count -> ShortArray(count.toInt()) { it.toShort() } } ?: shortArrayOf()
 
     fun setEnabled(enabled: Boolean) {
-        equalizer?.enabled = enabled
-        bassBoost?.enabled = enabled
-        virtualizer?.enabled = enabled
-        loudnessEnhancer?.enabled = enabled
-        reverb?.enabled = enabled
+        listOf(equalizer, bassBoost, virtualizer, loudnessEnhancer, reverb).forEach { effect ->
+            runCatching { effect?.enabled = enabled }
+        }
     }
 
     fun setBandLevel(band: Short, level: Short) { equalizer?.setBandLevel(band, level) }

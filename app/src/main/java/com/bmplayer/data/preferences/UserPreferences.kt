@@ -12,8 +12,6 @@ private val Context.dataStore by preferencesDataStore("bm_player_preferences")
 
 data class UserPreferences(
     val darkTheme: Boolean = false,
-    val accentLight: String = "#B9750F",
-    val accentDark: String = "#E8A33D",
     val excludedFolders: Set<String> = emptySet(),
     val crossfadeSeconds: Int = 5,
     val artworkShape: String = "rounded",
@@ -23,15 +21,18 @@ data class UserPreferences(
     val playbackPositionMs: Long = 0L,
     val playbackWasPlaying: Boolean = false,
     val shuffleEnabled: Boolean = false,
-    val repeatMode: Int = 0
+    val repeatMode: Int = 0,
+    val sortOrder: String = "title",
+    val liquidGlass: Boolean = false,
+    val effectsEnabled: Boolean = false,
+    val bassStrength: Int = 0,
+    val virtualizerStrength: Int = 0
 )
 
 class UserPreferencesStore(private val context: Context) {
     val preferences: Flow<UserPreferences> = context.dataStore.data.map { values ->
         UserPreferences(
             darkTheme = values[Keys.DARK_THEME] ?: false,
-            accentLight = values[Keys.ACCENT_LIGHT] ?: "#B9750F",
-            accentDark = values[Keys.ACCENT_DARK] ?: "#E8A33D",
             excludedFolders = values[Keys.EXCLUDED_FOLDERS]?.split("|")?.filter(String::isNotBlank)?.toSet() ?: emptySet(),
             crossfadeSeconds = values[Keys.CROSSFADE_SECONDS] ?: 5,
             artworkShape = values[Keys.ARTWORK_SHAPE] ?: "rounded",
@@ -41,25 +42,27 @@ class UserPreferencesStore(private val context: Context) {
             playbackPositionMs = values[Keys.PLAYBACK_POSITION] ?: 0L,
             playbackWasPlaying = values[Keys.PLAYBACK_WAS_PLAYING] ?: false,
             shuffleEnabled = values[Keys.SHUFFLE_ENABLED] ?: false,
-            repeatMode = values[Keys.REPEAT_MODE] ?: 0
+            repeatMode = values[Keys.REPEAT_MODE] ?: 0,
+            sortOrder = values[Keys.SORT_ORDER] ?: "title",
+            liquidGlass = values[Keys.LIQUID_GLASS] ?: false,
+            effectsEnabled = values[Keys.EFFECTS_ENABLED] ?: false,
+            bassStrength = values[Keys.BASS_STRENGTH] ?: 0,
+            virtualizerStrength = values[Keys.VIRTUALIZER_STRENGTH] ?: 0
         )
     }
 
     suspend fun setDarkTheme(enabled: Boolean) = context.dataStore.edit { it[Keys.DARK_THEME] = enabled }
-    suspend fun setAccent(light: String, dark: String) = context.dataStore.edit {
-        it[Keys.ACCENT_LIGHT] = light
-        it[Keys.ACCENT_DARK] = dark
-    }
-    suspend fun resetTheme() = context.dataStore.edit {
-        it.remove(Keys.ACCENT_LIGHT)
-        it.remove(Keys.ACCENT_DARK)
-    }
     suspend fun setExcludedFolders(folders: Set<String>) = context.dataStore.edit {
         it[Keys.EXCLUDED_FOLDERS] = folders.joinToString("|")
     }
     suspend fun setCrossfadeSeconds(seconds: Int) = context.dataStore.edit { it[Keys.CROSSFADE_SECONDS] = seconds.coerceIn(0, 15) }
     suspend fun setArtworkShape(shape: String) = context.dataStore.edit { it[Keys.ARTWORK_SHAPE] = shape }
     suspend fun setLanguage(language: String) = context.dataStore.edit { it[Keys.LANGUAGE] = language }
+    suspend fun setSortOrder(sortOrder: String) = context.dataStore.edit { it[Keys.SORT_ORDER] = sortOrder }
+    suspend fun setLiquidGlass(enabled: Boolean) = context.dataStore.edit { it[Keys.LIQUID_GLASS] = enabled }
+    suspend fun setEffectsEnabled(enabled: Boolean) = context.dataStore.edit { it[Keys.EFFECTS_ENABLED] = enabled }
+    suspend fun setBassStrength(strength: Int) = context.dataStore.edit { it[Keys.BASS_STRENGTH] = strength.coerceIn(0, 1000) }
+    suspend fun setVirtualizerStrength(strength: Int) = context.dataStore.edit { it[Keys.VIRTUALIZER_STRENGTH] = strength.coerceIn(0, 1000) }
     suspend fun savePlaybackState(
         queueIds: List<Long>,
         trackId: Long?,
@@ -78,8 +81,6 @@ class UserPreferencesStore(private val context: Context) {
 
     private object Keys {
         val DARK_THEME = booleanPreferencesKey("dark_theme")
-        val ACCENT_LIGHT = stringPreferencesKey("accent_light")
-        val ACCENT_DARK = stringPreferencesKey("accent_dark")
         val EXCLUDED_FOLDERS = stringPreferencesKey("excluded_folders")
         val CROSSFADE_SECONDS = androidx.datastore.preferences.core.intPreferencesKey("crossfade_seconds")
         val ARTWORK_SHAPE = stringPreferencesKey("artwork_shape")
@@ -90,5 +91,10 @@ class UserPreferencesStore(private val context: Context) {
         val PLAYBACK_WAS_PLAYING = booleanPreferencesKey("playback_was_playing")
         val SHUFFLE_ENABLED = booleanPreferencesKey("shuffle_enabled")
         val REPEAT_MODE = androidx.datastore.preferences.core.intPreferencesKey("repeat_mode")
+        val SORT_ORDER = stringPreferencesKey("sort_order")
+        val LIQUID_GLASS = booleanPreferencesKey("liquid_glass")
+        val EFFECTS_ENABLED = booleanPreferencesKey("effects_enabled")
+        val BASS_STRENGTH = androidx.datastore.preferences.core.intPreferencesKey("bass_strength")
+        val VIRTUALIZER_STRENGTH = androidx.datastore.preferences.core.intPreferencesKey("virtualizer_strength")
     }
 }

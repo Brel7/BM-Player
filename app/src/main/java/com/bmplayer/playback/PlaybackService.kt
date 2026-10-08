@@ -1,6 +1,8 @@
 package com.bmplayer.playback
 
 import android.os.Bundle
+import android.app.PendingIntent
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import androidx.media3.common.AudioAttributes
@@ -14,6 +16,7 @@ import androidx.media3.common.Player
 import androidx.glance.appwidget.updateAll
 import com.google.common.util.concurrent.Futures
 import com.bmplayer.widget.BMPlayerWidget
+import com.bmplayer.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -53,7 +56,16 @@ class PlaybackService : MediaSessionService() {
                 fadeHandler.postDelayed(this, 250L)
             }
         }.also { fadeHandler.post(it) }
+        val sessionActivityIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         mediaSession = MediaSession.Builder(this, player)
+            .setSessionActivity(sessionActivityIntent)
             .setCallback(object : MediaSession.Callback {
                 override fun onCustomCommand(
                     session: MediaSession,
@@ -62,12 +74,24 @@ class PlaybackService : MediaSessionService() {
                     args: Bundle
                 ) = when (customCommand.customAction) {
                     PlaybackCommands.SET_EFFECTS_ENABLED -> {
-                        audioEffects?.setEnabled(args.getBoolean(PlaybackCommands.ENABLED))
-                        Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                        if (audioEffects?.hasAvailableEffects != true) {
+                            Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
+                        } else {
+                            audioEffects?.setEnabled(args.getBoolean(PlaybackCommands.ENABLED))
+                            Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                        }
                     }
                     PlaybackCommands.SET_CROSSFADE -> {
                         crossfadeMs = args.getInt(PlaybackCommands.SECONDS).coerceIn(0, 15) * 1_000L
                         if (crossfadeMs == 0L) player.volume = 1f
+                        Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    }
+                    PlaybackCommands.SET_BASS_STRENGTH -> {
+                        audioEffects?.setBassStrength(args.getInt(PlaybackCommands.STRENGTH).toShort())
+                        Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    }
+                    PlaybackCommands.SET_VIRTUALIZER_STRENGTH -> {
+                        audioEffects?.setVirtualizerStrength(args.getInt(PlaybackCommands.STRENGTH).toShort())
                         Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                     }
                     else -> Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
