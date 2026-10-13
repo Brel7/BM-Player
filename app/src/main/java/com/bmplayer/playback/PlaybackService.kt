@@ -18,6 +18,19 @@ import androidx.media3.common.Player
 import androidx.glance.appwidget.updateAll
 import com.google.common.util.concurrent.Futures
 import com.bmplayer.widget.BMPlayerWidget
+import com.bmplayer.widget.WidgetState
+import com.bmplayer.data.preferences.UserPreferencesStore
+import com.bmplayer.data.repository.MusicRepository
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import kotlinx.coroutines.flow.first
+import com.bmplayer.ui.dominantAccent
+import com.bmplayer.ui.loadArtworkBitmap
+import android.graphics.Bitmap
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import com.bmplayer.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +38,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
+@AndroidEntryPoint
 class PlaybackService : MediaSessionService() {
+    @Inject lateinit var repository: MusicRepository
+    @Inject lateinit var preferencesStore: UserPreferencesStore
     private var mediaSession: MediaSession? = null
     private var audioEffects: AudioEffectsManager? = null
     private var crossfadeMs = 5_000L
@@ -34,6 +50,10 @@ class PlaybackService : MediaSessionService() {
     private var crossfadeInProgress = false
     private var crossfadeRunnable: Runnable? = null
     private var consecutiveErrors = 0
+    private var widgetJob: Job? = null
+    private var widgetArtworkUri: android.net.Uri? = null
+    private var widgetArtwork: Bitmap? = null
+    private var widgetAccent: Int? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate() {
@@ -46,6 +66,7 @@ class PlaybackService : MediaSessionService() {
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (!isPlaying && crossfadeInProgress) cancelCrossfade(player)
+                publishWidget(player)
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -68,12 +89,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
-                val metadata = mediaItem?.mediaMetadata
-                getSharedPreferences("bm_player_widget", MODE_PRIVATE).edit()
-                    .putString("title", metadata?.title?.toString().orEmpty())
-                    .putString("artist", metadata?.artist?.toString().orEmpty())
-                    .apply()
-                serviceScope.launch { BMPlayerWidget().updateAll(this@PlaybackService) }
+                publishWidget(player)
             }
         })
         object : Runnable {
@@ -121,6 +137,24 @@ class PlaybackService : MediaSessionService() {
                         Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                     }
                     else -> Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
+                }
+
+                // Media3 calls this when a controller (the widget) sends play() to an empty player, e.g. after process death.
+                override fun onPlaybackResumption(mediaSession: MediaSession, controller: MediaSession.ControllerInfo): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                    val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+                    serviceScope.launch {
+                        val saved = preferencesStore.preferences.first()
+                        if (repository.tracks.value.isEmpty()) runCatching { withContext(Dispatchers.IO) { repository.refresh() } }
+                        val plan = planResume(saved.playbackQueueIds, saved.playbackTrackId, saved.playbackPositionMs, repository.tracks.value.associateBy { it.id })
+                        if (plan == null) {
+                            future.setException(IllegalStateException("No saved queue to resume"))
+                        } else {
+                            player.shuffleModeEnabled = saved.shuffleEnabled
+                            player.repeatMode = saved.repeatMode
+                            future.set(MediaSession.MediaItemsWithStartPosition(plan.items.map { it.toMediaItem() }, plan.startIndex, plan.startPositionMs))
+                        }
+                    }
+                    return future
                 }
             })
             .build()
@@ -180,6 +214,25 @@ class PlaybackService : MediaSessionService() {
         }
         crossfadeRunnable = fade
         fadeHandler.post(fade)
+    }
+
+    private fun publishWidget(player: ExoPlayer) {
+        val item = player.currentMediaItem
+        val title = item?.mediaMetadata?.title?.toString()
+        val artist = item?.mediaMetadata?.artist?.toString().orEmpty()
+        val trackUri = item?.localConfiguration?.uri
+        val artworkUri = item?.mediaMetadata?.artworkUri
+        val isPlaying = player.isPlaying
+        widgetJob?.cancel() // a slow artwork load for an old track must never overwrite the new one
+        widgetJob = serviceScope.launch {
+            if (trackUri != widgetArtworkUri) {
+                widgetArtwork = trackUri?.let { loadArtworkBitmap(this@PlaybackService, it, artworkUri, 256) }
+                widgetAccent = withContext(Dispatchers.IO) { widgetArtwork?.let(::dominantAccent) }
+                widgetArtworkUri = trackUri
+            }
+            withContext(Dispatchers.IO) { WidgetState.save(this@PlaybackService, title, artist, isPlaying, widgetAccent, widgetArtwork) }
+            BMPlayerWidget().updateAll(this@PlaybackService)
+        }
     }
 
     private fun cancelCrossfade(player: ExoPlayer) {

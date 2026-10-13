@@ -3,12 +3,21 @@ package com.bmplayer.data.preferences
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore by preferencesDataStore("bm_player_preferences")
+
+private val APPEARANCE_STYLES = setOf("standard", "liquid_glass", "transparent")
+
+fun resolveAppearanceStyle(stored: String?, legacyLiquidGlass: Boolean?): String = when {
+    stored != null -> stored.takeIf { it in APPEARANCE_STYLES } ?: "standard"
+    legacyLiquidGlass == true -> "liquid_glass"
+    else -> "standard"
+}
 
 data class UserPreferences(
     val darkTheme: Boolean = false,
@@ -23,7 +32,10 @@ data class UserPreferences(
     val shuffleEnabled: Boolean = false,
     val repeatMode: Int = 0,
     val sortOrder: String = "title",
-    val liquidGlass: Boolean = false,
+    val appearanceStyle: String = "standard",
+    val backgroundDim: Float = 0.6f,
+    val widgetStyle: String = "accent",
+    val animationSpeed: String = "normal",
     val effectsEnabled: Boolean = false,
     val bassStrength: Int = 0,
     val virtualizerStrength: Int = 0
@@ -44,7 +56,10 @@ class UserPreferencesStore(private val context: Context) {
             shuffleEnabled = values[Keys.SHUFFLE_ENABLED] ?: false,
             repeatMode = values[Keys.REPEAT_MODE] ?: 0,
             sortOrder = values[Keys.SORT_ORDER] ?: "title",
-            liquidGlass = values[Keys.LIQUID_GLASS] ?: false,
+            appearanceStyle = resolveAppearanceStyle(values[Keys.APPEARANCE_STYLE], values[Keys.LIQUID_GLASS]),
+            backgroundDim = values[Keys.BACKGROUND_DIM] ?: 0.6f,
+            widgetStyle = values[Keys.WIDGET_STYLE] ?: "accent",
+            animationSpeed = values[Keys.ANIMATION_SPEED] ?: "normal",
             effectsEnabled = values[Keys.EFFECTS_ENABLED] ?: false,
             bassStrength = values[Keys.BASS_STRENGTH] ?: 0,
             virtualizerStrength = values[Keys.VIRTUALIZER_STRENGTH] ?: 0
@@ -59,7 +74,10 @@ class UserPreferencesStore(private val context: Context) {
     suspend fun setArtworkShape(shape: String) = context.dataStore.edit { it[Keys.ARTWORK_SHAPE] = shape }
     suspend fun setLanguage(language: String) = context.dataStore.edit { it[Keys.LANGUAGE] = language }
     suspend fun setSortOrder(sortOrder: String) = context.dataStore.edit { it[Keys.SORT_ORDER] = sortOrder }
-    suspend fun setLiquidGlass(enabled: Boolean) = context.dataStore.edit { it[Keys.LIQUID_GLASS] = enabled }
+    suspend fun setAppearanceStyle(style: String) = context.dataStore.edit { it[Keys.APPEARANCE_STYLE] = style }
+    suspend fun setAnimationSpeed(speed: String) = context.dataStore.edit { it[Keys.ANIMATION_SPEED] = speed }
+    suspend fun setWidgetStyle(style: String) = context.dataStore.edit { it[Keys.WIDGET_STYLE] = style }
+    suspend fun setBackgroundDim(dim: Float) = context.dataStore.edit { it[Keys.BACKGROUND_DIM] = dim.coerceIn(0f, 0.8f) }
     suspend fun setEffectsEnabled(enabled: Boolean) = context.dataStore.edit { it[Keys.EFFECTS_ENABLED] = enabled }
     suspend fun setBassStrength(strength: Int) = context.dataStore.edit { it[Keys.BASS_STRENGTH] = strength.coerceIn(0, 1000) }
     suspend fun setVirtualizerStrength(strength: Int) = context.dataStore.edit { it[Keys.VIRTUALIZER_STRENGTH] = strength.coerceIn(0, 1000) }
@@ -92,7 +110,11 @@ class UserPreferencesStore(private val context: Context) {
         val SHUFFLE_ENABLED = booleanPreferencesKey("shuffle_enabled")
         val REPEAT_MODE = androidx.datastore.preferences.core.intPreferencesKey("repeat_mode")
         val SORT_ORDER = stringPreferencesKey("sort_order")
-        val LIQUID_GLASS = booleanPreferencesKey("liquid_glass")
+        val LIQUID_GLASS = booleanPreferencesKey("liquid_glass") // legacy, read-only for migration
+        val APPEARANCE_STYLE = stringPreferencesKey("appearance_style")
+        val BACKGROUND_DIM = floatPreferencesKey("background_dim")
+        val WIDGET_STYLE = stringPreferencesKey("widget_style")
+        val ANIMATION_SPEED = stringPreferencesKey("animation_speed")
         val EFFECTS_ENABLED = booleanPreferencesKey("effects_enabled")
         val BASS_STRENGTH = androidx.datastore.preferences.core.intPreferencesKey("bass_strength")
         val VIRTUALIZER_STRENGTH = androidx.datastore.preferences.core.intPreferencesKey("virtualizer_strength")

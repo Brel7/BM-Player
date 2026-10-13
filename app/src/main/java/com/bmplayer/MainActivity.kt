@@ -5,7 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.database.ContentObserver
-import android.graphics.Color as AndroidColor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
@@ -22,6 +21,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -31,6 +31,13 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.scaleIn
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -76,7 +83,6 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -86,6 +92,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedButton
+import com.bmplayer.ui.formatTimerRemaining
+import com.bmplayer.ui.sleepTimerProgress
+import kotlinx.coroutines.android.awaitFrame
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -113,13 +133,31 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.compose.rememberAsyncImagePainter
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import android.widget.Toast
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.paint
+import com.bmplayer.ui.backgroundFile
+import com.bmplayer.ui.backDestination
+import com.bmplayer.ui.previousRestartsTrack
+import androidx.compose.runtime.rememberUpdatedState
+import com.bmplayer.ui.CollectionsScreen
+import com.bmplayer.ui.animationScale
+import com.bmplayer.ui.motionMs
+import com.bmplayer.ui.isForwardTransition
+import androidx.activity.compose.BackHandler
+import com.bmplayer.ui.dominantAccent
+import com.bmplayer.ui.loadArtworkBitmap
+import com.bmplayer.ui.saveBackgroundImage
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.glance.appwidget.updateAll
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
+import com.bmplayer.widget.BMPlayerWidget
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
@@ -137,11 +175,17 @@ import com.bmplayer.data.preferences.UserPreferencesStore
 import com.bmplayer.domain.model.Track
 import com.bmplayer.playback.PlaybackCommands
 import com.bmplayer.playback.PlaybackService
+import com.bmplayer.playback.planResume
+import com.bmplayer.playback.toMediaItem
 import com.bmplayer.ui.LibraryViewModel
-import com.bmplayer.ui.orderByIds
 import com.bmplayer.ui.sortTracks
 import com.bmplayer.ui.theme.BMPlayerTheme
 import com.bmplayer.ui.theme.LocalLiquidGlass
+import com.bmplayer.ui.theme.LocalAppearance
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -150,7 +194,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
-import kotlin.math.atan2
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -176,7 +219,7 @@ class MainActivity : ComponentActivity() {
     private var playbackTicker: Job? = null
     private var currentTrackId by mutableStateOf<Long?>(null)
     private var sleepTimerRemainingMs by mutableStateOf(0L)
-    private var playlistTrackIds by mutableStateOf<List<Long>>(emptyList())
+    private var sleepTimerTotalMs by mutableStateOf(0L)
     private val pendingNextTrackIds = mutableListOf<Long>()
     private var lastObservedTrackId: Long? = null
     private var playbackRestorationFinished = false
@@ -184,6 +227,13 @@ class MainActivity : ComponentActivity() {
     private var mediaObserverRegistered = false
     private val mediaStoreObserver: ContentObserver by lazy {
         MediaStoreObserver(Handler(Looper.getMainLooper())) { scheduleMediaStoreRefresh() }
+    }
+    private var backgroundVersion by mutableStateOf(0L)
+    private val backgroundPicker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) lifecycleScope.launch {
+            if (saveBackgroundImage(this@MainActivity, uri)) backgroundVersion = System.currentTimeMillis()
+            else Toast.makeText(this@MainActivity, if (preferencesStore.preferences.first().language == "en") "Unreadable image" else "Image illisible", Toast.LENGTH_SHORT).show()
+        }
     }
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         libraryViewModel.refresh()
@@ -193,6 +243,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestAudioPermissionIfNeeded()
+        backgroundVersion = backgroundFile(this).takeIf { it.exists() }?.lastModified() ?: 0L
         val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         val controllerFuture = MediaController.Builder(this, token).buildAsync()
         controllerFuture.addListener({
@@ -228,8 +279,6 @@ class MainActivity : ComponentActivity() {
                                 pendingNextTrackIds.removeAt(0)
                             }
                             lastObservedTrackId = observedTrackId
-                            val mediaMetadata = mediaController.currentMediaItem?.mediaMetadata
-                            publishWidgetTrack(mediaMetadata?.title?.toString().orEmpty(), mediaMetadata?.artist?.toString().orEmpty())
                         }
                         currentTrackId = observedTrackId
                         shuffleEnabledState = mediaController.shuffleModeEnabled
@@ -254,13 +303,14 @@ class MainActivity : ComponentActivity() {
             BMPlayerTheme(
                 darkTheme = preferences.darkTheme,
                 accent = albumAccent,
-                liquidGlass = preferences.liquidGlass
+                appearance = preferences.appearanceStyle,
+                animationScale = animationScale(preferences.animationSpeed)
             ) {
                 BMPlayerApp(
                     tracks = libraryTracks,
-                    favoriteIds = favoriteDao.observeIds().collectAsStateWithLifecycle(emptyList()).value.toSet(),
-                    playlists = playlistDao.observePlaylists().collectAsStateWithLifecycle(emptyList()).value,
-                    playlistTrackIds = playlistTrackIds,
+                    favoriteIds = remember { favoriteDao.observeIds() }.collectAsStateWithLifecycle(emptyList()).value.toSet(),
+                    playlists = remember { playlistDao.observePlaylists() }.collectAsStateWithLifecycle(emptyList()).value,
+                    playlistTracks = remember { playlistDao.observeAllTracks() }.collectAsStateWithLifecycle(emptyList()).value.let { rows -> remember(rows) { rows.groupBy({ it.playlistId }, { it.trackId }) } },
                     preferences = preferences,
                     onRefresh = libraryViewModel::refresh,
                     onPlay = ::playTrack,
@@ -282,22 +332,23 @@ class MainActivity : ComponentActivity() {
                     onToggleShuffle = { controller?.shuffleModeEnabled = !(controller?.shuffleModeEnabled ?: false) },
                     onCycleRepeat = { cycleRepeatMode() },
                     sleepTimerRemainingMs = sleepTimerRemainingMs,
+                    sleepTimerTotalMs = sleepTimerTotalMs,
                     onToggleDarkTheme = { enabled -> lifecycleScope.launch { preferencesStore.setDarkTheme(enabled) } },
                     onSleepTimer = ::startSleepTimer,
                     onEffectsEnabled = ::setEffectsEnabled,
                     effectsSupported = effectsSupported,
                     onBassStrength = { value -> lifecycleScope.launch { preferencesStore.setBassStrength(value); setEffectStrength(PlaybackCommands.SET_BASS_STRENGTH, value) } },
                     onVirtualizerStrength = { value -> lifecycleScope.launch { preferencesStore.setVirtualizerStrength(value); setEffectStrength(PlaybackCommands.SET_VIRTUALIZER_STRENGTH, value) } },
-                    onCreatePlaylist = { name -> lifecycleScope.launch { playlistDao.create(PlaylistEntity(name = name)) } },
-                    onDeletePlaylist = { id -> lifecycleScope.launch { playlistDao.delete(id) } },
-                    onAddToPlaylist = { playlistId, trackId ->
+                    onCreatePlaylist = { name, onCreated -> lifecycleScope.launch { onCreated(playlistDao.create(PlaylistEntity(name = name))) } },
+                    onDeletePlaylist = { id -> lifecycleScope.launch { playlistDao.deleteWithTracks(id) } },
+                    onAddTracks = { playlistId, trackIds ->
                         lifecycleScope.launch {
-                            playlistDao.addTrack(PlaylistTrackEntity(playlistId, trackId, playlistDao.nextPosition(playlistId)))
-                            playlistTrackIds = playlistTrackIds + trackId
+                            val first = playlistDao.nextPosition(playlistId)
+                            playlistDao.setTracks(trackIds.mapIndexed { index, trackId -> PlaylistTrackEntity(playlistId, trackId, first + index) })
                         }
                     },
-                    onPlayPlaylist = ::playPlaylist,
-                    onSelectPlaylist = { id -> lifecycleScope.launch { playlistTrackIds = playlistDao.tracks(id).map { it.trackId } } },
+                    onRemoveTrack = { playlistId, trackId -> lifecycleScope.launch { playlistDao.removeTrack(playlistId, trackId) } },
+                    onPlayGroup = { list, shuffle -> controller?.shuffleModeEnabled = shuffle; playAll(list) },
                     onCrossfadeChange = { seconds ->
                         lifecycleScope.launch {
                             preferencesStore.setCrossfadeSeconds(seconds)
@@ -308,7 +359,12 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onArtworkShapeChange = { shape -> lifecycleScope.launch { preferencesStore.setArtworkShape(shape) } },
-                    onLiquidGlassChange = { enabled -> lifecycleScope.launch { preferencesStore.setLiquidGlass(enabled) } },
+                    onAppearanceStyleChange = { style -> lifecycleScope.launch { preferencesStore.setAppearanceStyle(style) } },
+                    backgroundVersion = backgroundVersion,
+                    onPickBackground = { backgroundPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onBackgroundDimChange = { dim -> lifecycleScope.launch { preferencesStore.setBackgroundDim(dim) } },
+                    onAnimationSpeedChange = { speed -> lifecycleScope.launch { preferencesStore.setAnimationSpeed(speed) } },
+                    onWidgetStyleChange = { style -> lifecycleScope.launch { preferencesStore.setWidgetStyle(style); BMPlayerWidget().updateAll(this@MainActivity) } },
                     onLanguageChange = { language -> lifecycleScope.launch { preferencesStore.setLanguage(language) } }
                 )
             }
@@ -366,16 +422,13 @@ class MainActivity : ComponentActivity() {
                 playbackRestorationFinished = true
                 return@launch
             }
-            val queue = savedState.playbackQueueIds.mapNotNull { id -> library.firstOrNull { it.id == id } }
-            if (queue.isNotEmpty()) {
+            val plan = planResume(savedState.playbackQueueIds, savedState.playbackTrackId, savedState.playbackPositionMs, library.associateBy { it.id })
+            if (plan != null) {
                 val player = controller ?: return@launch
-                player.setMediaItems(queue.map(Track::toMediaItem))
+                player.setMediaItems(plan.items.map { it.toMediaItem() }, plan.startIndex, plan.startPositionMs)
                 player.shuffleModeEnabled = savedState.shuffleEnabled
                 player.repeatMode = savedState.repeatMode
                 player.prepare()
-                val startIndex = queue.indexOfFirst { it.id == savedState.playbackTrackId }.coerceAtLeast(0)
-                val startPosition = if (queue[startIndex].id == savedState.playbackTrackId) savedState.playbackPositionMs else 0L
-                player.seekTo(startIndex, startPosition)
                 if (savedState.playbackWasPlaying) player.play()
             }
             playbackRestorationFinished = true
@@ -394,14 +447,6 @@ class MainActivity : ComponentActivity() {
                 repeatMode = player.repeatMode
             )
         }
-    }
-
-    private fun publishWidgetTrack(title: String, artist: String) {
-        getSharedPreferences("bm_player_widget", MODE_PRIVATE).edit()
-            .putString("title", title)
-            .putString("artist", artist)
-            .apply()
-        lifecycleScope.launch { com.bmplayer.widget.BMPlayerWidget().updateAll(this@MainActivity) }
     }
 
     private fun requestAudioPermissionIfNeeded() {
@@ -436,19 +481,16 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { persistPlaybackState(player) }
     }
 
-    private fun playPlaylist(playlist: PlaylistEntity) {
-        lifecycleScope.launch {
-            playAll(orderByIds(libraryViewModel.tracks.value, playlistDao.tracks(playlist.id).map { it.trackId }))
-        }
-    }
 
     private fun startSleepTimer(minutes: Int) {
         sleepTimerJob?.cancel()
         if (minutes <= 0) {
             sleepTimerRemainingMs = 0L
+            sleepTimerTotalMs = 0L
             return
         }
         sleepTimerRemainingMs = minutes * 60_000L
+        sleepTimerTotalMs = sleepTimerRemainingMs
         sleepTimerJob = lifecycleScope.launch {
             while (sleepTimerRemainingMs > 0) {
                 delay(1_000L)
@@ -500,62 +542,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private fun Track.toMediaItem() = MediaItem.Builder()
-    .setUri(uri)
-    .setMediaId(id.toString())
-    .setTag(this)
-    .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setArtist(artist).setAlbumTitle(album).setArtworkUri(artworkUri).build())
-    .build()
-
 private fun UserPreferences.defaultAccent(): Color =
     if (darkTheme) Color(0xFFE8A33D) else Color(0xFFB9750F)
 
-private suspend fun extractAlbumAccent(context: Context, track: Track): Color? = withContext(Dispatchers.IO) {
-    val embeddedBitmap = runCatching {
-        MediaMetadataRetriever().use { retriever ->
-            retriever.setDataSource(context, track.uri)
-            retriever.embeddedPicture?.let { data -> BitmapFactory.decodeByteArray(data, 0, data.size) }
-        }
-    }.getOrNull()
-    val artwork = embeddedBitmap ?: track.artworkUri?.let { uri ->
-        runCatching { context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream) }.getOrNull()
-    } ?: return@withContext null
+private suspend fun extractAlbumAccent(context: Context, track: Track): Color? =
+    loadArtworkBitmap(context, track.uri, track.artworkUri, 256)?.let(::dominantAccent)?.let(::Color)
 
-    val scale = 32f / maxOf(artwork.width, artwork.height).coerceAtLeast(1)
-    val sample = Bitmap.createScaledBitmap(
-        artwork,
-        (artwork.width * scale).toInt().coerceAtLeast(1),
-        (artwork.height * scale).toInt().coerceAtLeast(1),
-        true
-    )
-    val pixels = IntArray(sample.width * sample.height)
-    sample.getPixels(pixels, 0, sample.width, 0, 0, sample.width, sample.height)
-    var hueX = 0.0
-    var hueY = 0.0
-    var saturationTotal = 0.0
-    var valueTotal = 0.0
-    var weightTotal = 0.0
-    val hsv = FloatArray(3)
-    pixels.forEach { pixel ->
-        AndroidColor.colorToHSV(pixel, hsv)
-        if (hsv[1] > 0.18f && hsv[2] in 0.16f..0.96f) {
-            val weight = hsv[1] * (1f - kotlin.math.abs(hsv[2] - 0.62f))
-            val angle = Math.toRadians(hsv[0].toDouble())
-            hueX += kotlin.math.cos(angle) * weight
-            hueY += sin(angle) * weight
-            saturationTotal += hsv[1] * weight
-            valueTotal += hsv[2] * weight
-            weightTotal += weight
-        }
-    }
-    if (weightTotal <= 0.0) return@withContext null
-    val hue = ((Math.toDegrees(atan2(hueY, hueX)) + 360.0) % 360.0).toFloat()
-    val saturation = (saturationTotal / weightTotal).toFloat().coerceIn(0.45f, 0.85f)
-    val value = (valueTotal / weightTotal).toFloat().coerceIn(0.55f, 0.88f)
-    Color(AndroidColor.HSVToColor(floatArrayOf(hue, saturation, value)))
-}
-
-private fun artworkShape(value: String): RoundedCornerShape = when (value) {
+internal fun artworkShape(value: String): RoundedCornerShape = when (value) {
     "round" -> RoundedCornerShape(50)
     "square" -> RoundedCornerShape(0)
     else -> RoundedCornerShape(12)
@@ -587,29 +580,37 @@ private fun BMPlayerApp(
     onToggleShuffle: () -> Unit,
     onCycleRepeat: () -> Unit,
     sleepTimerRemainingMs: Long,
+    sleepTimerTotalMs: Long,
     onToggleDarkTheme: (Boolean) -> Unit,
     onSleepTimer: (Int) -> Unit,
     onEffectsEnabled: (Boolean) -> Unit,
     effectsSupported: Boolean?,
     onBassStrength: (Int) -> Unit,
     onVirtualizerStrength: (Int) -> Unit,
-    onCreatePlaylist: (String) -> Unit,
-    playlistTrackIds: List<Long>,
+    onCreatePlaylist: (name: String, onCreated: (Long) -> Unit) -> Unit,
+    playlistTracks: Map<Long, List<Long>>,
     onDeletePlaylist: (Long) -> Unit,
-    onAddToPlaylist: (Long, Long) -> Unit,
-    onPlayPlaylist: (PlaylistEntity) -> Unit,
-    onSelectPlaylist: (Long) -> Unit,
+    onAddTracks: (playlistId: Long, trackIds: List<Long>) -> Unit,
+    onRemoveTrack: (playlistId: Long, trackId: Long) -> Unit,
+    onPlayGroup: (tracks: List<Track>, shuffle: Boolean) -> Unit,
     onCrossfadeChange: (Int) -> Unit,
     onArtworkShapeChange: (String) -> Unit,
     onLanguageChange: (String) -> Unit,
-    onLiquidGlassChange: (Boolean) -> Unit
+    onAppearanceStyleChange: (String) -> Unit,
+    backgroundVersion: Long,
+    onPickBackground: () -> Unit,
+    onBackgroundDimChange: (Float) -> Unit,
+    onAnimationSpeedChange: (String) -> Unit,
+    onWidgetStyleChange: (String) -> Unit
 ) {
     var selectedTrack by remember { mutableStateOf<Track?>(null) }
     var tab by remember { mutableStateOf(0) }
     var bottomBarCollapsed by remember { mutableStateOf(false) }
+    val backTarget = backDestination(tab, currentTrackId != null)
+    BackHandler(enabled = backTarget != null) { backTarget?.let { tab = it } }
     val activeTrack = tracks.firstOrNull { it.id == currentTrackId } ?: selectedTrack
     val english = preferences.language == "en"
-    val appBackdrop = if (preferences.liquidGlass) {
+    val appBackdrop = if (preferences.appearanceStyle == "liquid_glass") {
         Brush.linearGradient(
             listOf(
                 MaterialTheme.colorScheme.primary.copy(alpha = 0.20f),
@@ -621,15 +622,23 @@ private fun BMPlayerApp(
     } else {
         Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.background))
     }
+    val context = LocalContext.current
+    val photoBackdrop = if (preferences.appearanceStyle == "transparent" && backgroundVersion > 0L) {
+        Modifier.clipToBounds()
+            .paint(rememberAsyncImagePainter(backgroundRequest(context, backgroundVersion)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+            .background(MaterialTheme.colorScheme.background.copy(alpha = preferences.backgroundDim))
+    } else Modifier.background(appBackdrop)
     Scaffold(
-        modifier = Modifier.fillMaxSize().background(appBackdrop),
+        modifier = Modifier.fillMaxSize().then(photoBackdrop),
         containerColor = Color.Transparent,
         bottomBar = {
+        val barIn = motionMs(220)
+        val barOut = motionMs(180)
         AnimatedContent(
             targetState = bottomBarCollapsed,
             transitionSpec = {
-                (slideInVertically(tween(220)) { it / 2 } + fadeIn(tween(220))) togetherWith
-                    (slideOutVertically(tween(180)) { it / 2 } + fadeOut(tween(180)))
+                (slideInVertically(tween(barIn)) { it / 2 } + fadeIn(tween(barIn))) togetherWith
+                    (slideOutVertically(tween(barOut)) { it / 2 } + fadeOut(tween(barOut))) using SizeTransform { _, _ -> tween(barIn) }
             },
             label = "bottom-bar-collapse"
         ) { collapsed ->
@@ -640,7 +649,7 @@ private fun BMPlayerApp(
                             .liquidGlassSurface(RoundedCornerShape(50))
                             .clickable { bottomBarCollapsed = false },
                         shape = RoundedCornerShape(50),
-                        color = if (preferences.liquidGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
+                        color = if (preferences.appearanceStyle != "standard") Color.Transparent else MaterialTheme.colorScheme.surface,
                         tonalElevation = 4.dp
                     ) {
                         IconButton(onClick = { bottomBarCollapsed = false }) {
@@ -665,7 +674,7 @@ private fun BMPlayerApp(
                 Surface(
                     Modifier.padding(12.dp).liquidGlassSurface(RoundedCornerShape(28.dp)),
                     shape = RoundedCornerShape(28.dp),
-                    color = if (preferences.liquidGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
+                    color = if (preferences.appearanceStyle != "standard") Color.Transparent else MaterialTheme.colorScheme.surface,
                     tonalElevation = 8.dp,
                     shadowElevation = 8.dp
                 ) {
@@ -673,7 +682,6 @@ private fun BMPlayerApp(
                         NavigationBar {
                             NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.LibraryMusic, null) }, label = { Text(if (english) "Library" else "Bibliothèque") })
                             NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text(if (english) "Playing" else "Lecture") })
-                            NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text(if (english) "Settings" else "Réglages") })
                             NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = { Icon(Icons.Default.Favorite, null) }, label = { Text(if (english) "Favorites" else "Favoris") })
                             NavigationBarItem(selected = tab == 4, onClick = { tab = 4 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text("Playlists") })
                         }
@@ -685,11 +693,22 @@ private fun BMPlayerApp(
             }
         }
     }) { padding ->
-        if (tab == 0) LibraryScreen(tracks, favoriteIds, currentTrackId, preferences.artworkShape, preferences.sortOrder, onSetSortOrder, onRefresh, { tab = 2 }, onPlay, onPlayNext, onToggleFavorite, onPlayAll, { selectedTrack = it }, Modifier.padding(padding))
-        else if (tab == 1) NowPlayingScreen(activeTrack, activeTrack?.id in favoriteIds, preferences.artworkShape, isPlaying, playbackPositionMs, playbackDurationMs, onSeek, onPause, onResume, onNext, onPrevious, shuffleEnabled, repeatMode, onToggleShuffle, onCycleRepeat, { tab = 0 }, { activeTrack?.let(onToggleFavorite) }, Modifier.padding(padding))
-        else if (tab == 2) SettingsScreen(preferences, onToggleDarkTheme, onEffectsEnabled, effectsSupported, onBassStrength, onVirtualizerStrength, sleepTimerRemainingMs, onSleepTimer, onCrossfadeChange, onArtworkShapeChange, onLanguageChange, onLiquidGlassChange, Modifier.padding(padding))
-        else if (tab == 3) { val favorites = tracks.filter { it.id in favoriteIds }; FavoritesScreen(favorites, currentTrackId, preferences.artworkShape, { selectedTrack = it; onPlay(it, favorites) }, { onToggleFavorite(it) }, Modifier.padding(padding)) }
-        else PlaylistScreen(playlists, tracks, playlistTrackIds, preferences.artworkShape, onCreatePlaylist, onDeletePlaylist, onAddToPlaylist, onPlayPlaylist, onSelectPlaylist, Modifier.padding(padding))
+        val screenMs = motionMs(320)
+        AnimatedContent(
+            targetState = tab,
+            transitionSpec = {
+                val direction = if (isForwardTransition(initialState, targetState)) 1 else -1
+                (slideInHorizontally(tween(screenMs)) { direction * it / 3 } + fadeIn(tween(screenMs))) togetherWith
+                    (slideOutHorizontally(tween(screenMs)) { -direction * it / 3 } + fadeOut(tween(screenMs)))
+            },
+            label = "screen"
+        ) { screen ->
+            if (screen == 0) LibraryScreen(tracks, favoriteIds, currentTrackId, preferences.artworkShape, preferences.sortOrder, onSetSortOrder, onRefresh, { tab = 2 }, onPlay, onPlayNext, onToggleFavorite, onPlayAll, { selectedTrack = it }, Modifier.padding(padding), active = screen == tab)
+            else if (screen == 1) NowPlayingScreen(activeTrack, activeTrack?.id in favoriteIds, preferences.artworkShape, isPlaying, playbackPositionMs, playbackDurationMs, onSeek, onPause, onResume, onNext, onPrevious, shuffleEnabled, repeatMode, onToggleShuffle, onCycleRepeat, { tab = 0 }, { activeTrack?.let(onToggleFavorite) }, Modifier.padding(padding))
+            else if (screen == 2) SettingsScreen(preferences, onToggleDarkTheme, onEffectsEnabled, effectsSupported, onBassStrength, onVirtualizerStrength, sleepTimerRemainingMs, sleepTimerTotalMs, onSleepTimer, onCrossfadeChange, onArtworkShapeChange, onLanguageChange, onAppearanceStyleChange, backgroundVersion, onPickBackground, onBackgroundDimChange, onAnimationSpeedChange, onWidgetStyleChange, Modifier.padding(padding))
+            else if (screen == 3) { val favorites = tracks.filter { it.id in favoriteIds }; FavoritesScreen(favorites, currentTrackId, preferences.artworkShape, { selectedTrack = it; onPlay(it, favorites) }, { onToggleFavorite(it) }, Modifier.padding(padding)) }
+            else CollectionsScreen(tracks, playlists, playlistTracks, currentTrackId, preferences.artworkShape, english, onPlay, onPlayGroup, onCreatePlaylist, onDeletePlaylist, onAddTracks, onRemoveTrack, Modifier.padding(padding), active = screen == tab)
+        }
     }
 }
 
@@ -712,20 +731,34 @@ private fun MiniPlayerDock(
         Modifier.fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .liquidGlassSurface(dockShape)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = if (LocalLiquidGlass.current) 0.62f else 0.98f), dockShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = if (LocalAppearance.current != "standard") 0.62f else 0.98f), dockShape)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-            Box(Modifier.size(44.dp).clip(artworkShape(artworkShapeValue)).clickable(onClick = onOpen)) {
-            ArtworkImage(track, Modifier.fillMaxSize())
-        }
-        Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f).clickable(onClick = onOpen)) {
-            Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
-            Text(track.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        val miniMs = motionMs(240)
+        AnimatedContent(
+            targetState = track,
+            contentKey = { it.id },
+            transitionSpec = {
+                (slideInVertically(tween(miniMs)) { it / 2 } + fadeIn(tween(miniMs))) togetherWith
+                    (slideOutVertically(tween(miniMs)) { -it / 2 } + fadeOut(tween(miniMs)))
+            },
+            modifier = Modifier.weight(1f).clickable(onClick = onOpen),
+            label = "mini-player-track"
+        ) { shown ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(44.dp).clip(artworkShape(artworkShapeValue))) {
+                    ArtworkImage(shown, Modifier.fillMaxSize())
+                }
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(shown.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                    Text(shown.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
         IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, "Précédent") }
-        IconButton(onClick = onTogglePlayback) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (isPlaying) "Pause" else "Lecture") }
+        IconButton(onClick = onTogglePlayback) { Crossfade(targetState = isPlaying, animationSpec = tween(motionMs(150)), label = "mini-play-pause") { playing -> Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (playing) "Pause" else "Lecture") } }
         IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, "Suivant") }
         IconButton(onClick = onCollapse) { Icon(Icons.Default.KeyboardArrowDown, if (english) "Hide player bar" else "Réduire le lecteur") }
         Box {
@@ -745,13 +778,24 @@ private fun MiniPlayerDock(
 }
 
 @Composable
-private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTrackId: Long?, artworkShapeValue: String, sortOrder: String, onSortOrderChange: (String) -> Unit, onRefresh: () -> Unit, onOpenSettings: () -> Unit, onPlay: (track: Track, queue: List<Track>) -> Unit, onPlayNext: (Track) -> Unit, onToggleFavorite: (Track) -> Unit, onPlayAll: (List<Track>) -> Unit, onSelect: (Track) -> Unit, modifier: Modifier) {
+private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTrackId: Long?, artworkShapeValue: String, sortOrder: String, onSortOrderChange: (String) -> Unit, onRefresh: () -> Unit, onOpenSettings: () -> Unit, onPlay: (track: Track, queue: List<Track>) -> Unit, onPlayNext: (Track) -> Unit, onToggleFavorite: (Track) -> Unit, onPlayAll: (List<Track>) -> Unit, onSelect: (Track) -> Unit, modifier: Modifier, active: Boolean = true) {
     var searchQuery by remember { mutableStateOf("") }
     var searchExpanded by remember { mutableStateOf(false) }
     var sortMenuExpanded by remember { mutableStateOf(false) }
     var activeRailLetter by remember { mutableStateOf<Char?>(null) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val searchFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val searchMs = motionMs(250)
+    BackHandler(enabled = active && searchExpanded) { searchExpanded = false; searchQuery = "" }
+    LaunchedEffect(searchExpanded) {
+        if (searchExpanded) {
+            awaitFrame() // the field only enters composition with AnimatedVisibility
+            searchFocus.requestFocus()
+            keyboard?.show()
+        }
+    }
     val orderedTracks = remember(tracks, sortOrder) { sortTracks(tracks, sortOrder) }
     val matchingTracks = remember(orderedTracks, searchQuery) {
         val query = searchQuery.trim()
@@ -787,14 +831,16 @@ private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTr
         Spacer(Modifier.height(20.dp))
         AnimatedVisibility(
             visible = searchExpanded,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
+            enter = expandVertically(tween(searchMs)) + fadeIn(tween(searchMs)),
+            exit = shrinkVertically(tween(searchMs)) + fadeOut(tween(searchMs))
         ) {
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Rechercher") },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = "" }) {
@@ -921,7 +967,33 @@ private fun TrackRow(track: Track, selected: Boolean, favorite: Boolean, artwork
 
 @Composable
 private fun NowPlayingScreen(track: Track?, isFavorite: Boolean, artworkShapeValue: String, isPlaying: Boolean, playbackPositionMs: Long, playbackDurationMs: Long, onSeek: (Long) -> Unit, onPause: () -> Unit, onResume: () -> Unit, onNext: () -> Unit, onPrevious: () -> Unit, shuffleEnabled: Boolean, repeatMode: Int, onToggleShuffle: () -> Unit, onCycleRepeat: () -> Unit, onOpenLibrary: () -> Unit, onToggleFavorite: () -> Unit, modifier: Modifier) {
-    var dragOffset by remember { mutableStateOf(0f) }
+    val dragX = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    var artworkWidthPx by remember { mutableIntStateOf(1) }
+    var skipDirection by remember { mutableIntStateOf(1) }
+    var gestureSwap by remember { mutableStateOf(false) }
+    val flyMs = motionMs(220)
+    val swapMs = motionMs(360)
+    // Read at call time: the gesture handler below is created once and would otherwise see a stale position.
+    val positionMs by rememberUpdatedState(playbackPositionMs)
+    val nextAction by rememberUpdatedState(onNext)
+    val previousAction by rememberUpdatedState(onPrevious)
+    val openLibrary by rememberUpdatedState(onOpenLibrary)
+    var directionReset by remember { mutableStateOf<Job?>(null) }
+    val skipPrevious = {
+        skipDirection = if (previousRestartsTrack(positionMs)) 1 else -1
+        previousAction()
+        // First track: Previous restarts it without a track change, so the next automatic swap must go forward again.
+        directionReset?.cancel()
+        directionReset = scope.launch { delay(1_000L); skipDirection = 1 }
+    }
+    val skipNext = { skipDirection = 1; nextAction() }
+    LaunchedEffect(track?.id) {
+        // The new artwork is now entering from the side; bring the flown-out container back without a visible jump.
+        if (dragX.value != 0f) dragX.snapTo(0f)
+        gestureSwap = false
+        skipDirection = 1
+    }
         Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("LECTURE EN COURS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(34.dp))
@@ -929,28 +1001,54 @@ private fun NowPlayingScreen(track: Track?, isFavorite: Boolean, artworkShapeVal
             Modifier
                 .fillMaxWidth()
                 .height(330.dp)
-                .offset { IntOffset(dragOffset.roundToInt(), 0) }
+                .onSizeChanged { artworkWidthPx = it.width.coerceAtLeast(1) }
+                .offset { IntOffset(dragX.value.roundToInt(), 0) }
+                .graphicsLayer { rotationZ = (dragX.value * 0.02f).coerceIn(-8f, 8f) }
                 .clip(artworkShape(artworkShapeValue))
                 .background(MaterialTheme.colorScheme.primary.copy(alpha = .18f))
                 .liquidGlassSurface(artworkShape(artworkShapeValue))
-                .pointerInput(Unit) {
+                .pointerInput(flyMs) {
                     var totalDrag = Offset.Zero
+                    fun settle() = scope.launch { if (flyMs == 0) dragX.snapTo(0f) else dragX.animateTo(0f, spring(dampingRatio = 0.6f)) }
+                    var returnJob: Job? = null
+                    fun flyOut(direction: Int) {
+                        returnJob?.cancel()
+                        returnJob = scope.launch {
+                            try {
+                                dragX.animateTo(-direction * artworkWidthPx.toFloat(), tween(flyMs))
+                            } finally {
+                                // A new touch cancels the fly-out animation; the swipe must still change the track.
+                                gestureSwap = true
+                                if (direction > 0) skipNext() else skipPrevious()
+                            }
+                            // No track change (e.g. last track without repeat): bring the artwork back instead of leaving it off-screen.
+                            delay(700L)
+                            if (dragX.value != 0f) { gestureSwap = false; settle() }
+                        }
+                    }
                     detectDragGestures(
-                        onDragStart = { totalDrag = Offset.Zero },
+                        onDragStart = { totalDrag = Offset.Zero; returnJob?.cancel() },
                         onDrag = { change, amount ->
                             change.consume()
                             totalDrag += amount
-                            dragOffset = (totalDrag.x * 0.35f).coerceIn(-120f, 120f)
+                            scope.launch { dragX.snapTo(totalDrag.x) }
                         },
                         onDragEnd = {
+                            val threshold = artworkWidthPx * 0.3f
                             when {
-                                totalDrag.x < -80f -> onNext()
-                                totalDrag.x > 80f -> onPrevious()
-                                totalDrag.y > 100f -> onOpenLibrary()
+                                // Animations off: no fly-out, so no empty gap while waiting for the track change.
+                                flyMs == 0 && totalDrag.x < -threshold -> { skipNext(); settle() }
+                                flyMs == 0 && totalDrag.x > threshold -> { skipPrevious(); settle() }
+                                totalDrag.x < -threshold -> flyOut(1)
+                                // Past 3 s Previous only restarts the track: no fly-out, which would leave an empty gap.
+                                totalDrag.x > threshold -> if (previousRestartsTrack(positionMs)) { skipPrevious(); settle() } else flyOut(-1)
+                                else -> {
+                                    if (totalDrag.y > 100f) openLibrary()
+                                    settle()
+                                }
                             }
-                            dragOffset = 0f
                         },
-                        onDragCancel = { dragOffset = 0f }
+                        onDragCancel = { settle() }
                     )
                 },
             contentAlignment = Alignment.Center
@@ -958,8 +1056,11 @@ private fun NowPlayingScreen(track: Track?, isFavorite: Boolean, artworkShapeVal
             AnimatedContent(
                 targetState = track,
                 transitionSpec = {
-                    (fadeIn(tween(360)) + slideInHorizontally(tween(360)) { it / 5 }) togetherWith
-                        (fadeOut(tween(260)) + slideOutHorizontally(tween(260)) { -it / 6 })
+                    val s = skipDirection
+                    val enter = slideInHorizontally(tween(swapMs)) { s * it } + fadeIn(tween(swapMs)) + scaleIn(tween(swapMs), initialScale = 0.92f)
+                    // After a swipe the old artwork already flew away, so it leaves instantly.
+                    val exit = if (gestureSwap) fadeOut(tween(0)) else slideOutHorizontally(tween(swapMs)) { -s * it } + fadeOut(tween(swapMs))
+                    enter togetherWith exit
                 },
                 label = "album-art-transition"
             ) { displayedTrack ->
@@ -989,14 +1090,15 @@ private fun NowPlayingScreen(track: Track?, isFavorite: Boolean, artworkShapeVal
         Spacer(Modifier.height(18.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             IconButton(onClick = onToggleShuffle) { Icon(Icons.Default.Shuffle, "Aléatoire", tint = if (shuffleEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) }
-            IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, "Précédent", Modifier.size(28.dp)) }
-            Surface(Modifier.size(60.dp), shape = androidx.compose.foundation.shape.CircleShape, color = MaterialTheme.colorScheme.primary) { IconButton(onClick = if (isPlaying) onPause else onResume) { Icon(imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Lecture", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(32.dp)) } }
-            IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, "Suivant", Modifier.size(28.dp)) }
+            IconButton(onClick = skipPrevious) { Icon(Icons.Default.SkipPrevious, "Précédent", Modifier.size(28.dp)) }
+            Surface(Modifier.size(60.dp), shape = androidx.compose.foundation.shape.CircleShape, color = MaterialTheme.colorScheme.primary) { IconButton(onClick = if (isPlaying) onPause else onResume) { Crossfade(targetState = isPlaying, animationSpec = tween(motionMs(150)), label = "play-pause") { playing -> Icon(imageVector = if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = if (playing) "Pause" else "Lecture", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(32.dp)) } } }
+            IconButton(onClick = skipNext) { Icon(Icons.Default.SkipNext, "Suivant", Modifier.size(28.dp)) }
             IconButton(onClick = onCycleRepeat) { Icon(if (repeatMode == androidx.media3.common.Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat, "Répétition", tint = if (repeatMode == androidx.media3.common.Player.REPEAT_MODE_OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary) }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen(
     preferences: UserPreferences,
@@ -1006,16 +1108,22 @@ private fun SettingsScreen(
     onBassStrength: (Int) -> Unit,
     onVirtualizerStrength: (Int) -> Unit,
     sleepTimerRemainingMs: Long,
+    sleepTimerTotalMs: Long,
     onSleepTimer: (Int) -> Unit,
     onCrossfadeChange: (Int) -> Unit,
     onArtworkShapeChange: (String) -> Unit,
     onLanguageChange: (String) -> Unit,
-    onLiquidGlassChange: (Boolean) -> Unit,
+    onAppearanceStyleChange: (String) -> Unit,
+    backgroundVersion: Long,
+    onPickBackground: () -> Unit,
+    onBackgroundDimChange: (Float) -> Unit,
+    onAnimationSpeedChange: (String) -> Unit,
+    onWidgetStyleChange: (String) -> Unit,
     modifier: Modifier
 ) {
     var bassStrength by remember(preferences.bassStrength) { mutableFloatStateOf(preferences.bassStrength.toFloat()) }
     var virtualizerStrength by remember(preferences.virtualizerStrength) { mutableFloatStateOf(preferences.virtualizerStrength.toFloat()) }
-    var customTimerMinutes by remember { mutableStateOf("") }
+    var customTimerMinutes by remember { mutableStateOf(40) }
     var showAppearance by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     val english = preferences.language == "en"
@@ -1047,9 +1155,37 @@ private fun SettingsScreen(
         }
         Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAppearance = !showAppearance }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "Appearance" else "Apparence", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text(if (showAppearance) "−" else "+", style = MaterialTheme.typography.titleLarge) }
         if (showAppearance) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(if (english) "Liquid Glass surfaces" else "Surfaces Liquid Glass", Modifier.weight(1f))
-                Switch(checked = preferences.liquidGlass, onCheckedChange = onLiquidGlassChange)
+            Text("Style", style = MaterialTheme.typography.titleMedium)
+            val styles = listOf("standard" to "Standard", "liquid_glass" to "Liquid Glass", "transparent" to "Transparent")
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                styles.forEachIndexed { index, (value, label) ->
+                    SegmentedButton(selected = preferences.appearanceStyle == value, onClick = { onAppearanceStyleChange(value) }, shape = SegmentedButtonDefaults.itemShape(index, styles.size)) { Text(label, maxLines = 1) }
+                }
+            }
+            Text(if (english) "Animation speed" else "Vitesse des animations", style = MaterialTheme.typography.titleMedium)
+            val speeds = listOf("slow" to if (english) "Slow" else "Lente", "normal" to if (english) "Normal" else "Normale", "fast" to if (english) "Fast" else "Rapide", "off" to if (english) "Off" else "Désactivées")
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                speeds.forEachIndexed { index, (value, label) ->
+                    SegmentedButton(selected = preferences.animationSpeed == value, onClick = { onAnimationSpeedChange(value) }, shape = SegmentedButtonDefaults.itemShape(index, speeds.size)) { Text(label, maxLines = 1, style = MaterialTheme.typography.labelMedium) }
+                }
+            }
+            if (preferences.appearanceStyle == "transparent") {
+                val context = LocalContext.current
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (backgroundVersion > 0L) AsyncImage(model = backgroundRequest(context, backgroundVersion), contentDescription = if (english) "Background photo" else "Photo de fond", modifier = Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    else Text(if (english) "Choose a photo" else "Choisissez une photo", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    Button(onClick = onPickBackground) { Text(if (backgroundVersion > 0L) (if (english) "Change" else "Changer") else (if (english) "Choose" else "Choisir")) }
+                }
+                var dim by remember(preferences.backgroundDim) { mutableStateOf(preferences.backgroundDim) }
+                Text(if (english) "Overlay: ${(dim * 100).roundToInt()} %" else "Voile : ${(dim * 100).roundToInt()} %")
+                Slider(value = dim, onValueChange = { dim = it }, valueRange = 0f..0.8f, onValueChangeFinished = { onBackgroundDimChange(dim) })
+            }
+            Text("Widget", style = MaterialTheme.typography.titleMedium)
+            val widgetStyles = listOf("accent" to if (english) "Artwork color" else "Couleur de la pochette", "glass" to "Liquid Glass")
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                widgetStyles.forEachIndexed { index, (value, label) ->
+                    SegmentedButton(selected = preferences.widgetStyle == value, onClick = { onWidgetStyleChange(value) }, shape = SegmentedButtonDefaults.itemShape(index, widgetStyles.size)) { Text(label, maxLines = 1) }
+                }
             }
             Text(if (english) "Artwork shape" else "Forme des pochettes", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1061,16 +1197,29 @@ private fun SettingsScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = { onLanguageChange("fr") }) { Text("Français") }; Button(onClick = { onLanguageChange("en") }) { Text("English") } }
         }
         Text(if (english) "Sleep timer" else "Minuteur", style = MaterialTheme.typography.titleMedium)
-        Text(if (sleepTimerRemainingMs > 0) (if (english) "Active: ${formatDuration(sleepTimerRemainingMs)} remaining" else "Actif : ${formatDuration(sleepTimerRemainingMs)} restantes") else (if (english) "No active timer" else "Aucun minuteur actif"), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(15, 30, 60).forEach { minutes -> Button(onClick = { onSleepTimer(minutes) }) { Text("${minutes} min") } }
+        if (sleepTimerRemainingMs > 0) {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.size(160.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(progress = { sleepTimerProgress(sleepTimerRemainingMs, sleepTimerTotalMs) }, modifier = Modifier.fillMaxSize(), strokeWidth = 8.dp)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(formatTimerRemaining(sleepTimerRemainingMs), style = MaterialTheme.typography.headlineLarge)
+                        Text(if (english) "remaining" else "restantes", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(onClick = { onSleepTimer(0) }) { Text(if (english) "Cancel" else "Annuler") }
+            }
+        } else {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(15, 30, 45, 60, 90).forEach { minutes -> FilterChip(selected = false, onClick = { onSleepTimer(minutes) }, label = { Text("$minutes min") }) }
+            }
+            Text(if (english) "Custom: $customTimerMinutes min" else "Personnalisé : $customTimerMinutes min")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Slider(value = customTimerMinutes.toFloat(), onValueChange = { customTimerMinutes = (it / 5).roundToInt() * 5 }, valueRange = 5f..180f, steps = 34, modifier = Modifier.weight(1f))
+                Button(onClick = { onSleepTimer(customTimerMinutes) }) { Text(if (english) "Start" else "Démarrer") }
+            }
         }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = customTimerMinutes, onValueChange = { customTimerMinutes = it.filter(Char::isDigit) }, label = { Text(if (english) "Custom duration" else "Durée personnalisée") }, suffix = { Text("min") }, singleLine = true, modifier = Modifier.weight(1f))
-            Button(onClick = { customTimerMinutes.toIntOrNull()?.takeIf { it > 0 }?.let(onSleepTimer) }) { Text(if (english) "Start" else "Démarrer") }
-        }
-        if (sleepTimerRemainingMs > 0) Button(onClick = { onSleepTimer(0) }) { Text(if (english) "Stop timer" else "Arrêter le minuteur") }
-        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version 1.1.4 · 2026") }
+        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version 1.2.0 · 2026") }
         if (showAbout) {
             Text("BM Player · lecteur local sans publicité ni suivi.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Politique de confidentialité\nAucune donnée personnelle, aucun tracker et aucune publicité. La musique reste sur votre appareil.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1081,75 +1230,7 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun PlaylistScreen(
-    playlists: List<PlaylistEntity>,
-    tracks: List<Track>,
-    playlistTrackIds: List<Long>,
-    artworkShapeValue: String,
-    onCreate: (String) -> Unit,
-    onDelete: (Long) -> Unit,
-    onAddToPlaylist: (Long, Long) -> Unit,
-    onPlayPlaylist: (PlaylistEntity) -> Unit,
-    onSelectPlaylist: (Long) -> Unit,
-    modifier: Modifier
-) {
-    var name by remember { mutableStateOf("") }
-    var selectedPlaylistId by remember { mutableStateOf<Long?>(null) }
-    var deleteCandidate by remember { mutableStateOf<PlaylistEntity?>(null) }
-    Column(modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Playlists", style = MaterialTheme.typography.headlineLarge)
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Nouvelle playlist") }, modifier = Modifier.weight(1f))
-            Spacer(Modifier.width(8.dp))
-            Button(onClick = { if (name.isNotBlank()) { onCreate(name.trim()); name = "" } }) { Text("Créer") }
-        }
-        if (playlists.isEmpty()) {
-            Text("Aucune playlist personnalisée", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else {
-            LazyColumn(Modifier.weight(if (selectedPlaylistId == null) 1f else 0.35f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(playlists, key = { it.id }) { playlist ->
-                    val playlistShape = RoundedCornerShape(if (LocalLiquidGlass.current) 14.dp else 4.dp)
-                    Row(Modifier.fillMaxWidth().clip(playlistShape).background(MaterialTheme.colorScheme.surfaceVariant).liquidGlassSurface(playlistShape).clickable { selectedPlaylistId = playlist.id; onSelectPlaylist(playlist.id) }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(playlist.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                        IconButton(onClick = { onPlayPlaylist(playlist) }) { Icon(Icons.Default.PlayArrow, "Lire la playlist") }
-                        Button(onClick = { deleteCandidate = playlist }) { Text("Supprimer") }
-                    }
-                }
-            }
-        }
-        val selectedPlaylist = playlists.firstOrNull { it.id == selectedPlaylistId }
-        if (selectedPlaylist != null) {
-            Text("Ajouter à « ${selectedPlaylist.name} »", style = MaterialTheme.typography.titleMedium)
-            val selectedTracks = orderByIds(tracks, playlistTrackIds)
-            if (selectedTracks.isNotEmpty()) {
-                Text("${selectedTracks.size} morceaux dans cette playlist", color = MaterialTheme.colorScheme.primary)
-                LazyColumn(Modifier.weight(0.35f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(selectedTracks, key = { "selected-${it.id}" }) { track -> TrackRow(track, false, false, artworkShapeValue, { onPlayPlaylist(selectedPlaylist) }, {}) }
-                }
-            }
-            LazyColumn(Modifier.weight(0.65f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(tracks, key = { it.id }) { track ->
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(track.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Button(onClick = { onAddToPlaylist(selectedPlaylist.id, track.id) }, enabled = track.id !in playlistTrackIds) { Text(if (track.id in playlistTrackIds) "Ajoutée" else "Ajouter") }
-                    }
-                }
-            }
-        }
-        deleteCandidate?.let { playlist ->
-            AlertDialog(
-                onDismissRequest = { deleteCandidate = null },
-                title = { Text("Supprimer la playlist ?") },
-                text = { Text("Cette action supprimera « ${playlist.name} » et ses morceaux.") },
-                confirmButton = { Button(onClick = { onDelete(playlist.id); if (selectedPlaylistId == playlist.id) selectedPlaylistId = null; deleteCandidate = null }) { Text("Supprimer") } },
-                dismissButton = { Button(onClick = { deleteCandidate = null }) { Text("Annuler") } }
-            )
-        }
-    }
-}
-
-@Composable
-private fun ArtworkImage(track: Track, modifier: Modifier) {
+internal fun ArtworkImage(track: Track, modifier: Modifier) {
     val context = LocalContext.current
     val embeddedArtwork by produceState<Bitmap?>(initialValue = null, track.uri) {
         value = withContext(Dispatchers.IO) {
@@ -1203,3 +1284,9 @@ private fun AnimatedWaveform(isPlaying: Boolean) {
 }
 
 private fun formatDuration(milliseconds: Long): String { val seconds = milliseconds / 1000; return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}" }
+
+private fun backgroundRequest(context: Context, version: Long): ImageRequest = ImageRequest.Builder(context)
+    .data(backgroundFile(context))
+    .memoryCacheKey("app_background_$version")
+    .diskCachePolicy(CachePolicy.DISABLED)
+    .build()

@@ -20,11 +20,14 @@ BM Player lit les fichiers audio déjà présents sur l’appareil. Le projet vi
 - Crossfade réglable jusqu’à 15 secondes.
 - Pochettes intégrées et pochettes MediaStore, avec choix de forme.
 - Favoris persistants.
-- Playlists persistantes avec ajout, lecture et suppression confirmée.
-- Minuteur d’arrêt avec presets et durée personnalisée.
+- Écran Playlists en trois onglets : par artiste, par album et compiles personnelles (création, ajout et retrait de titres, lecture dans l’ordre ou aléatoire).
+- Minuteur d’arrêt avec durées prédéfinies et curseur.
 - Égaliseur, bass boost et spatialisation selon les effets exposés par l’appareil.
-- Thème clair/sombre, Liquid Glass sur les écrans, accent adapté à la pochette et formes personnalisables.
-- Widget Glance lisible sur tout fond d’écran, affichant la piste courante et ouvrant le lecteur.
+- Thème clair/sombre, styles Standard, Liquid Glass ou Transparent (photo de la galerie en fond), accent adapté à la pochette et formes personnalisables.
+- Animations de navigation et d’échange de pochette (balayage), vitesse réglable : lente, normale, rapide ou désactivée.
+- Bouton Retour hiérarchique : Réglages, Favoris et Playlists ramènent à la lecture en cours, puis à la bibliothèque.
+- Widget Glance 4×1 avec pochette et commandes (précédent, lecture/pause, suivant), aux couleurs de la pochette ou en Liquid Glass.
+- Reprise de la dernière file de lecture depuis le widget ou les commandes média du système.
 - Lecture robuste : les fichiers illisibles sont sautés et les raisons d’arrêt sont journalisées (`adb logcat -s BMPlayback`).
 - Interface française et anglaise pour la navigation et les réglages principaux.
 
@@ -104,7 +107,7 @@ Consulter [LICENSE](LICENSE) pour la licence du code et la section À propos de 
 
 ## État du projet
 
-Version affichée : **1.1.4 · 2026**.
+Version affichée : **1.2.0 · 2026**.
 
 Le projet est en développement actif. Les fonctionnalités dépendant du matériel, notamment certains effets audio, le Bluetooth, les widgets et le crossfade, doivent être vérifiées sur un appareil Android réel. Des utilitaires de parsing LRC et M3U existent dans le code, mais l’import des paroles et l’import/export des playlists ne sont pas encore proposés dans un parcours utilisateur complet.
 

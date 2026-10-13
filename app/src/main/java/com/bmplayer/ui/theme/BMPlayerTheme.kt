@@ -30,9 +30,11 @@ private val DarkText = Color(0xFFF5F1EA)
 private val DarkSecondary = Color(0xFF9C948A)
 private val DarkAccent = Color(0xFFE8A33D)
 val LocalLiquidGlass = compositionLocalOf { false }
+val LocalAppearance = compositionLocalOf { "standard" }
+val LocalAnimationScale = compositionLocalOf { 1f }
 
 @Composable
-fun BMPlayerTheme(darkTheme: Boolean, accent: Color? = null, liquidGlass: Boolean = false, content: @Composable () -> Unit) {
+fun BMPlayerTheme(darkTheme: Boolean, accent: Color? = null, appearance: String = "standard", animationScale: Float = 1f, content: @Composable () -> Unit) {
     val colors = if (darkTheme) {
         darkColorScheme(
             primary = accent ?: DarkAccent,
@@ -54,13 +56,14 @@ fun BMPlayerTheme(darkTheme: Boolean, accent: Color? = null, liquidGlass: Boolea
             onSurfaceVariant = LightSecondary
         )
     }
-    CompositionLocalProvider(LocalLiquidGlass provides liquidGlass) {
+    CompositionLocalProvider(LocalAppearance provides appearance, LocalLiquidGlass provides (appearance == "liquid_glass"), LocalAnimationScale provides animationScale) {
         MaterialTheme(colorScheme = colors, typography = BMPlayerTypography, content = content)
     }
 }
 
 @Composable
 fun Modifier.liquidGlassSurface(shape: Shape = RoundedCornerShape(18.dp)): Modifier {
+    if (LocalAppearance.current == "transparent") return clip(shape).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
     if (!LocalLiquidGlass.current) return this
     val accent = MaterialTheme.colorScheme.primary
     return shadow(18.dp, shape, ambientColor = accent.copy(alpha = 0.16f), spotColor = accent.copy(alpha = 0.24f))
