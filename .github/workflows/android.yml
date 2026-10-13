@@ -29,5 +29,5 @@ jobs:
       - name: Install Android SDK platform
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Run unit tests and build debug APK
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon

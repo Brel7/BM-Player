@@ -14,8 +14,8 @@ android {
         applicationId = "com.bmplayer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.1.3"
+        versionCode = 11
+        versionName = "1.1.4"
     }
 
     buildFeatures { compose = true }
@@ -49,4 +49,5 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
     debugImplementation(libs.androidx.compose.ui.tooling)
+    testImplementation(libs.junit)
 }

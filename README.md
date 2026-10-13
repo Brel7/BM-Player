@@ -15,7 +15,7 @@ BM Player lit les fichiers audio déjà présents sur l’appareil. Le projet vi
 - Mini-lecteur persistant avec commandes précédente, lecture/pause et suivante.
 - Clic sur la notification média pour rouvrir directement le lecteur.
 - Action « Lire ensuite » avec ordre conservé pour les sélections successives.
-- Tri alphabétique, par date d’ajout ou aléatoire, avec index latéral A-Z.
+- Tri alphabétique, par date d’ajout ou aléatoire, avec index latéral A-Z ; la lecture suit l’ordre affiché.
 - Rescan automatique lorsque MediaStore signale l’arrivée de nouveaux fichiers audio.
 - Crossfade réglable jusqu’à 15 secondes.
 - Pochettes intégrées et pochettes MediaStore, avec choix de forme.
@@ -24,7 +24,8 @@ BM Player lit les fichiers audio déjà présents sur l’appareil. Le projet vi
 - Minuteur d’arrêt avec presets et durée personnalisée.
 - Égaliseur, bass boost et spatialisation selon les effets exposés par l’appareil.
 - Thème clair/sombre, Liquid Glass sur les écrans, accent adapté à la pochette et formes personnalisables.
-- Widget Glance affichant la piste courante et ouvrant le lecteur.
+- Widget Glance lisible sur tout fond d’écran, affichant la piste courante et ouvrant le lecteur.
+- Lecture robuste : les fichiers illisibles sont sautés et les raisons d’arrêt sont journalisées (`adb logcat -s BMPlayback`).
 - Interface française et anglaise pour la navigation et les réglages principaux.
 
 ## Stack technique
@@ -66,6 +67,12 @@ Sous Windows PowerShell :
 .\gradlew.bat :app:assembleDebug
 ```
 
+Tests unitaires :
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
+
 L’APK debug est générée dans :
 
 ```text
@@ -97,7 +104,7 @@ Consulter [LICENSE](LICENSE) pour la licence du code et la section À propos de 
 
 ## État du projet
 
-Version affichée : **1.1.3 · 2026**.
+Version affichée : **1.1.4 · 2026**.
 
 Le projet est en développement actif. Les fonctionnalités dépendant du matériel, notamment certains effets audio, le Bluetooth, les widgets et le crossfade, doivent être vérifiées sur un appareil Android réel. Des utilitaires de parsing LRC et M3U existent dans le code, mais l’import des paroles et l’import/export des playlists ne sont pas encore proposés dans un parcours utilisateur complet.
 
@@ -105,10 +112,10 @@ Le projet est en développement actif. Les fonctionnalités dépendant du matér
 
 1. Créer une branche dédiée.
 2. Effectuer les changements avec des commits ciblés.
-3. Vérifier `./gradlew :app:assembleDebug` avant une pull request.
+3. Vérifier `./gradlew :app:testDebugUnitTest :app:assembleDebug` avant une pull request.
 4. Décrire le comportement testé et l’appareil utilisé.
 
-La CI GitHub se trouve dans `.github/workflows/android.yml` et compile automatiquement l’APK debug sur les push et pull requests.
+La CI GitHub se trouve dans `.github/workflows/android.yml` lance les tests unitaires et compile l’APK debug sur les push et pull requests.
 
 ## Licence
 

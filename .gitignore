@@ -27,3 +27,7 @@ Thumbs.db
 *.jks
 *.keystore
 secrets.properties
+
+# Local tooling output
+graphify-out/
+.superpowers/

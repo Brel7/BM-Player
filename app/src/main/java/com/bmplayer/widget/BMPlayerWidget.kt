@@ -6,6 +6,8 @@ import androidx.compose.runtime.Composable
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.action.clickable
+import androidx.glance.background
+import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.provideContent
@@ -35,13 +37,15 @@ class BMPlayerWidget : GlanceAppWidget() {
     private fun WidgetContent(trackTitle: String?, artist: String, launchIntent: Intent) {
         Column(
             GlanceModifier.fillMaxSize()
+                .background(Color(0xFF1E1E1E))
+                .cornerRadius(20.dp)
                 .clickable(actionStartActivity(launchIntent))
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("BM PLAYER", style = TextStyle(color = ColorProvider(Color(0xFFB9750F)), fontSize = 12.sp))
-            Text(trackTitle ?: "Aucune lecture en cours", maxLines = 1, style = TextStyle(fontSize = 18.sp))
-            if (artist.isNotBlank()) Text(artist, maxLines = 1, style = TextStyle(fontSize = 13.sp))
+            Text(trackTitle ?: "Aucune lecture en cours", maxLines = 1, style = TextStyle(color = ColorProvider(Color.White), fontSize = 18.sp))
+            if (artist.isNotBlank()) Text(artist, maxLines = 1, style = TextStyle(color = ColorProvider(Color(0xFFBDBDBD)), fontSize = 13.sp))
         }
     }
 }

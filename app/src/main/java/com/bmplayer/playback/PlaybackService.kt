@@ -5,6 +5,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
@@ -28,9 +30,10 @@ class PlaybackService : MediaSessionService() {
     private var audioEffects: AudioEffectsManager? = null
     private var crossfadeMs = 5_000L
     private val fadeHandler = Handler(Looper.getMainLooper())
-    private var fadeRunnable: Runnable? = null
     private var crossfadePlayer: ExoPlayer? = null
     private var crossfadeInProgress = false
+    private var crossfadeRunnable: Runnable? = null
+    private var consecutiveErrors = 0
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onCreate() {
@@ -38,9 +41,32 @@ class PlaybackService : MediaSessionService() {
         val player = ExoPlayer.Builder(this).setAudioAttributes(
             AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
             true
-        ).setHandleAudioBecomingNoisy(true).build()
+        ).setHandleAudioBecomingNoisy(true).setWakeMode(C.WAKE_MODE_LOCAL).build()
         audioEffects = AudioEffectsManager(player.audioSessionId)
         player.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (!isPlaying && crossfadeInProgress) cancelCrossfade(player)
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                // reason: 2 = audio focus loss, 3 = audio becoming noisy, 5 = end of media item
+                if (!playWhenReady) Log.i(TAG, "pause, raison=$reason")
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                Log.w(TAG, "erreur de lecture", error)
+                consecutiveErrors++
+                // No play(): playWhenReady is kept, so a paused player stays paused after the skip.
+                if (shouldSkipAfterError(consecutiveErrors, player.mediaItemCount, player.hasNextMediaItem())) {
+                    player.seekToNextMediaItem()
+                    player.prepare()
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) consecutiveErrors = 0
+            }
+
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
                 val metadata = mediaItem?.mediaMetadata
                 getSharedPreferences("bm_player_widget", MODE_PRIVATE).edit()
@@ -50,9 +76,9 @@ class PlaybackService : MediaSessionService() {
                 serviceScope.launch { BMPlayerWidget().updateAll(this@PlaybackService) }
             }
         })
-        fadeRunnable = object : Runnable {
+        object : Runnable {
             override fun run() {
-                if (!crossfadeInProgress && player.repeatMode != Player.REPEAT_MODE_ONE && crossfadeMs > 0 && player.duration > 0 && player.nextMediaItemIndex != C.INDEX_UNSET && player.duration - player.currentPosition <= crossfadeMs) startCrossfade(player)
+                if (shouldStartCrossfade(player.isPlaying, crossfadeInProgress, player.repeatMode == Player.REPEAT_MODE_ONE, crossfadeMs, player.duration, player.currentPosition, player.hasNextMediaItem())) startCrossfade(player)
                 fadeHandler.postDelayed(this, 250L)
             }
         }.also { fadeHandler.post(it) }
@@ -104,8 +130,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         serviceScope.cancel()
-        fadeRunnable?.let(fadeHandler::removeCallbacks)
-        fadeRunnable = null
+        fadeHandler.removeCallbacksAndMessages(null)
         crossfadePlayer?.release()
         crossfadePlayer = null
         mediaSession?.run {
@@ -140,17 +165,33 @@ class PlaybackService : MediaSessionService() {
                     fadeHandler.postDelayed(this, 50L)
                 } else {
                     val position = secondary.currentPosition
+                    // Clear state before pause() so onIsPlayingChanged does not treat this handover as a user pause.
+                    crossfadeRunnable = null
+                    crossfadePlayer = null
+                    crossfadeInProgress = false
                     player.pause()
                     player.seekTo(nextIndex, position)
                     player.volume = 1f
                     player.play()
                     secondary.stop()
                     secondary.release()
-                    crossfadePlayer = null
-                    crossfadeInProgress = false
                 }
             }
         }
+        crossfadeRunnable = fade
         fadeHandler.post(fade)
+    }
+
+    private fun cancelCrossfade(player: ExoPlayer) {
+        crossfadeRunnable?.let(fadeHandler::removeCallbacks)
+        crossfadeRunnable = null
+        crossfadePlayer?.release()
+        crossfadePlayer = null
+        player.volume = 1f
+        crossfadeInProgress = false
+    }
+
+    private companion object {
+        const val TAG = "BMPlayback"
     }
 }

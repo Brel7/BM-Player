@@ -9,3 +9,10 @@ object PlaybackCommands {
     const val SET_VIRTUALIZER_STRENGTH = "com.bmplayer.playback.SET_VIRTUALIZER_STRENGTH"
     const val STRENGTH = "strength"
 }
+
+fun shouldStartCrossfade(isPlaying: Boolean, inProgress: Boolean, repeatOne: Boolean, crossfadeMs: Long, durationMs: Long, positionMs: Long, hasNext: Boolean): Boolean =
+    isPlaying && !inProgress && !repeatOne && crossfadeMs > 0 && durationMs > 0 && hasNext && durationMs - positionMs <= crossfadeMs
+
+// Cap at the queue size so repeat-all over unreadable files cannot loop forever.
+fun shouldSkipAfterError(consecutiveErrors: Int, mediaItemCount: Int, hasNext: Boolean): Boolean =
+    hasNext && consecutiveErrors < mediaItemCount

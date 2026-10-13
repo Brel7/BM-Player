@@ -20,11 +20,16 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -59,6 +64,8 @@ import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
@@ -131,6 +138,8 @@ import com.bmplayer.domain.model.Track
 import com.bmplayer.playback.PlaybackCommands
 import com.bmplayer.playback.PlaybackService
 import com.bmplayer.ui.LibraryViewModel
+import com.bmplayer.ui.orderByIds
+import com.bmplayer.ui.sortTracks
 import com.bmplayer.ui.theme.BMPlayerTheme
 import com.bmplayer.ui.theme.LocalLiquidGlass
 import dagger.hilt.android.AndroidEntryPoint
@@ -167,7 +176,7 @@ class MainActivity : ComponentActivity() {
     private var playbackTicker: Job? = null
     private var currentTrackId by mutableStateOf<Long?>(null)
     private var sleepTimerRemainingMs by mutableStateOf(0L)
-    private var playlistTrackIds by mutableStateOf<Set<Long>>(emptySet())
+    private var playlistTrackIds by mutableStateOf<List<Long>>(emptyList())
     private val pendingNextTrackIds = mutableListOf<Long>()
     private var lastObservedTrackId: Long? = null
     private var playbackRestorationFinished = false
@@ -288,7 +297,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onPlayPlaylist = ::playPlaylist,
-                    onSelectPlaylist = { id -> lifecycleScope.launch { playlistTrackIds = playlistDao.tracks(id).map { it.trackId }.toSet() } },
+                    onSelectPlaylist = { id -> lifecycleScope.launch { playlistTrackIds = playlistDao.tracks(id).map { it.trackId } } },
                     onCrossfadeChange = { seconds ->
                         lifecycleScope.launch {
                             preferencesStore.setCrossfadeSeconds(seconds)
@@ -401,12 +410,9 @@ class MainActivity : ComponentActivity() {
         else libraryViewModel.refresh()
     }
 
-    private fun playTrack(track: Track) {
+    private fun playTrack(track: Track, queue: List<Track>) {
         lifecycleScope.launch { historyDao.record(HistoryEntity(trackId = track.id)) }
-        val library = libraryViewModel.tracks.value
-        val mediaItems = library.map { it.toMediaItem() }
-        controller?.setMediaItems(mediaItems)
-        controller?.seekTo(library.indexOfFirst { it.id == track.id }.coerceAtLeast(0), 0L)
+        controller?.setMediaItems(queue.map { it.toMediaItem() }, queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0), 0L)
         controller?.prepare()
         controller?.play()
     }
@@ -421,7 +427,7 @@ class MainActivity : ComponentActivity() {
     private fun playNext(track: Track) {
         val player = controller ?: return
         if (player.mediaItemCount == 0) {
-            playTrack(track)
+            playTrack(track, libraryViewModel.tracks.value)
             return
         }
         val insertAt = (player.currentMediaItemIndex + 1 + pendingNextTrackIds.size).coerceIn(0, player.mediaItemCount)
@@ -432,8 +438,7 @@ class MainActivity : ComponentActivity() {
 
     private fun playPlaylist(playlist: PlaylistEntity) {
         lifecycleScope.launch {
-            val ids = playlistDao.tracks(playlist.id).map { it.trackId }.toSet()
-            playAll(libraryViewModel.tracks.value.filter { it.id in ids })
+            playAll(orderByIds(libraryViewModel.tracks.value, playlistDao.tracks(playlist.id).map { it.trackId }))
         }
     }
 
@@ -563,7 +568,7 @@ private fun BMPlayerApp(
     playlists: List<PlaylistEntity>,
     preferences: UserPreferences,
     onRefresh: () -> Unit,
-    onPlay: (Track) -> Unit,
+    onPlay: (track: Track, queue: List<Track>) -> Unit,
     onPlayNext: (Track) -> Unit,
     onSetSortOrder: (String) -> Unit,
     onToggleFavorite: (Track) -> Unit,
@@ -589,7 +594,7 @@ private fun BMPlayerApp(
     onBassStrength: (Int) -> Unit,
     onVirtualizerStrength: (Int) -> Unit,
     onCreatePlaylist: (String) -> Unit,
-    playlistTrackIds: Set<Long>,
+    playlistTrackIds: List<Long>,
     onDeletePlaylist: (Long) -> Unit,
     onAddToPlaylist: (Long, Long) -> Unit,
     onPlayPlaylist: (PlaylistEntity) -> Unit,
@@ -601,6 +606,7 @@ private fun BMPlayerApp(
 ) {
     var selectedTrack by remember { mutableStateOf<Track?>(null) }
     var tab by remember { mutableStateOf(0) }
+    var bottomBarCollapsed by remember { mutableStateOf(false) }
     val activeTrack = tracks.firstOrNull { it.id == currentTrackId } ?: selectedTrack
     val english = preferences.language == "en"
     val appBackdrop = if (preferences.liquidGlass) {
@@ -619,40 +625,70 @@ private fun BMPlayerApp(
         modifier = Modifier.fillMaxSize().background(appBackdrop),
         containerColor = Color.Transparent,
         bottomBar = {
-        if (currentTrackId != null && tab != 1 && activeTrack != null) {
-            MiniPlayerDock(
-                track = activeTrack,
-                isPlaying = isPlaying,
-                artworkShapeValue = preferences.artworkShape,
-                english = english,
-                onOpen = { tab = 1 },
-                onNavigate = { tab = it },
-                onPrevious = onPrevious,
-                onTogglePlayback = if (isPlaying) onPause else onResume,
-                onNext = onNext
-            )
-        } else {
-            Surface(
-                Modifier.padding(12.dp).liquidGlassSurface(RoundedCornerShape(28.dp)),
-                shape = RoundedCornerShape(28.dp),
-                color = if (preferences.liquidGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
-                tonalElevation = 8.dp,
-                shadowElevation = 8.dp
-            ) {
-                NavigationBar {
-                    NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.LibraryMusic, null) }, label = { Text(if (english) "Library" else "Bibliothèque") })
-                    NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text(if (english) "Playing" else "Lecture") })
-                    NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text(if (english) "Settings" else "Réglages") })
-                    NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = { Icon(Icons.Default.Favorite, null) }, label = { Text(if (english) "Favorites" else "Favoris") })
-                    NavigationBarItem(selected = tab == 4, onClick = { tab = 4 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text("Playlists") })
+        AnimatedContent(
+            targetState = bottomBarCollapsed,
+            transitionSpec = {
+                (slideInVertically(tween(220)) { it / 2 } + fadeIn(tween(220))) togetherWith
+                    (slideOutVertically(tween(180)) { it / 2 } + fadeOut(tween(180)))
+            },
+            label = "bottom-bar-collapse"
+        ) { collapsed ->
+            if (collapsed) {
+                Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        Modifier.size(width = 64.dp, height = 30.dp)
+                            .liquidGlassSurface(RoundedCornerShape(50))
+                            .clickable { bottomBarCollapsed = false },
+                        shape = RoundedCornerShape(50),
+                        color = if (preferences.liquidGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
+                        tonalElevation = 4.dp
+                    ) {
+                        IconButton(onClick = { bottomBarCollapsed = false }) {
+                            Icon(Icons.Default.KeyboardArrowUp, if (english) "Show navigation" else "Rouvrir la barre")
+                        }
+                    }
+                }
+            } else if (currentTrackId != null && tab != 1 && activeTrack != null) {
+                MiniPlayerDock(
+                    track = activeTrack,
+                    isPlaying = isPlaying,
+                    artworkShapeValue = preferences.artworkShape,
+                    english = english,
+                    onOpen = { tab = 1 },
+                    onNavigate = { tab = it },
+                    onPrevious = onPrevious,
+                    onTogglePlayback = if (isPlaying) onPause else onResume,
+                    onNext = onNext,
+                    onCollapse = { bottomBarCollapsed = true }
+                )
+            } else {
+                Surface(
+                    Modifier.padding(12.dp).liquidGlassSurface(RoundedCornerShape(28.dp)),
+                    shape = RoundedCornerShape(28.dp),
+                    color = if (preferences.liquidGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
+                    tonalElevation = 8.dp,
+                    shadowElevation = 8.dp
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        NavigationBar {
+                            NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.LibraryMusic, null) }, label = { Text(if (english) "Library" else "Bibliothèque") })
+                            NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text(if (english) "Playing" else "Lecture") })
+                            NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text(if (english) "Settings" else "Réglages") })
+                            NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = { Icon(Icons.Default.Favorite, null) }, label = { Text(if (english) "Favorites" else "Favoris") })
+                            NavigationBarItem(selected = tab == 4, onClick = { tab = 4 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text("Playlists") })
+                        }
+                        IconButton(onClick = { bottomBarCollapsed = true }, modifier = Modifier.size(26.dp)) {
+                            Icon(Icons.Default.KeyboardArrowDown, if (english) "Hide navigation" else "Réduire la barre", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                 }
             }
         }
     }) { padding ->
-        if (tab == 0) LibraryScreen(tracks, favoriteIds, currentTrackId, selectedTrack, preferences.artworkShape, preferences.sortOrder, onSetSortOrder, onRefresh, onPlay, onPlayNext, onToggleFavorite, onPlayAll, { selectedTrack = it }, Modifier.padding(padding))
+        if (tab == 0) LibraryScreen(tracks, favoriteIds, currentTrackId, preferences.artworkShape, preferences.sortOrder, onSetSortOrder, onRefresh, { tab = 2 }, onPlay, onPlayNext, onToggleFavorite, onPlayAll, { selectedTrack = it }, Modifier.padding(padding))
         else if (tab == 1) NowPlayingScreen(activeTrack, activeTrack?.id in favoriteIds, preferences.artworkShape, isPlaying, playbackPositionMs, playbackDurationMs, onSeek, onPause, onResume, onNext, onPrevious, shuffleEnabled, repeatMode, onToggleShuffle, onCycleRepeat, { tab = 0 }, { activeTrack?.let(onToggleFavorite) }, Modifier.padding(padding))
         else if (tab == 2) SettingsScreen(preferences, onToggleDarkTheme, onEffectsEnabled, effectsSupported, onBassStrength, onVirtualizerStrength, sleepTimerRemainingMs, onSleepTimer, onCrossfadeChange, onArtworkShapeChange, onLanguageChange, onLiquidGlassChange, Modifier.padding(padding))
-        else if (tab == 3) FavoritesScreen(tracks.filter { it.id in favoriteIds }, currentTrackId, preferences.artworkShape, { selectedTrack = it; onPlay(it) }, { onToggleFavorite(it) }, Modifier.padding(padding))
+        else if (tab == 3) { val favorites = tracks.filter { it.id in favoriteIds }; FavoritesScreen(favorites, currentTrackId, preferences.artworkShape, { selectedTrack = it; onPlay(it, favorites) }, { onToggleFavorite(it) }, Modifier.padding(padding)) }
         else PlaylistScreen(playlists, tracks, playlistTrackIds, preferences.artworkShape, onCreatePlaylist, onDeletePlaylist, onAddToPlaylist, onPlayPlaylist, onSelectPlaylist, Modifier.padding(padding))
     }
 }
@@ -667,7 +703,8 @@ private fun MiniPlayerDock(
     onNavigate: (Int) -> Unit,
     onPrevious: () -> Unit,
     onTogglePlayback: () -> Unit,
-    onNext: () -> Unit
+    onNext: () -> Unit,
+    onCollapse: () -> Unit
 ) {
     val dockShape = RoundedCornerShape(22.dp)
     var destinationsExpanded by remember { mutableStateOf(false) }
@@ -690,6 +727,7 @@ private fun MiniPlayerDock(
         IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, "Précédent") }
         IconButton(onClick = onTogglePlayback) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (isPlaying) "Pause" else "Lecture") }
         IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, "Suivant") }
+        IconButton(onClick = onCollapse) { Icon(Icons.Default.KeyboardArrowDown, if (english) "Hide player bar" else "Réduire le lecteur") }
         Box {
             IconButton(onClick = { destinationsExpanded = true }) { Icon(Icons.Default.MoreVert, "Navigation") }
             DropdownMenu(expanded = destinationsExpanded, onDismissRequest = { destinationsExpanded = false }) {
@@ -707,19 +745,14 @@ private fun MiniPlayerDock(
 }
 
 @Composable
-private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTrackId: Long?, selected: Track?, artworkShapeValue: String, sortOrder: String, onSortOrderChange: (String) -> Unit, onRefresh: () -> Unit, onPlay: (Track) -> Unit, onPlayNext: (Track) -> Unit, onToggleFavorite: (Track) -> Unit, onPlayAll: (List<Track>) -> Unit, onSelect: (Track) -> Unit, modifier: Modifier) {
+private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTrackId: Long?, artworkShapeValue: String, sortOrder: String, onSortOrderChange: (String) -> Unit, onRefresh: () -> Unit, onOpenSettings: () -> Unit, onPlay: (track: Track, queue: List<Track>) -> Unit, onPlayNext: (Track) -> Unit, onToggleFavorite: (Track) -> Unit, onPlayAll: (List<Track>) -> Unit, onSelect: (Track) -> Unit, modifier: Modifier) {
     var searchQuery by remember { mutableStateOf("") }
+    var searchExpanded by remember { mutableStateOf(false) }
     var sortMenuExpanded by remember { mutableStateOf(false) }
     var activeRailLetter by remember { mutableStateOf<Char?>(null) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val orderedTracks = remember(tracks, sortOrder) {
-        when (sortOrder) {
-            "date" -> tracks.sortedByDescending { it.dateAdded }
-            "random" -> tracks.shuffled()
-            else -> tracks.sortedBy { it.title.lowercase() }
-        }
-    }
+    val orderedTracks = remember(tracks, sortOrder) { sortTracks(tracks, sortOrder) }
     val matchingTracks = remember(orderedTracks, searchQuery) {
         val query = searchQuery.trim()
         if (query.isEmpty()) orderedTracks else orderedTracks.filter { track ->
@@ -728,39 +761,49 @@ private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTr
         }
     }
     Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-        Row(Modifier.fillMaxWidth().padding(top = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                AsyncImage(model = com.bmplayer.R.drawable.bm_player_logo, contentDescription = "Logo BM Player", modifier = Modifier.size(46.dp).clip(RoundedCornerShape(12.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                Spacer(Modifier.width(12.dp))
-                Column { Text("BM Player", style = MaterialTheme.typography.headlineLarge); Text("Votre musique, simplement.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                AsyncImage(model = com.bmplayer.R.drawable.bm_player_logo, contentDescription = "Logo BM Player", modifier = Modifier.size(36.dp).clip(RoundedCornerShape(9.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                Spacer(Modifier.width(8.dp))
+                Text("BM Player", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Row {
-                IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Actualiser") }
+                IconButton(onClick = { searchExpanded = !searchExpanded; if (searchExpanded.not()) searchQuery = "" }, modifier = Modifier.size(36.dp)) {
+                    Icon(if (searchExpanded) Icons.Default.Clear else Icons.Default.Search, if (searchExpanded) "Masquer la recherche" else "Rechercher")
+                }
+                IconButton(onClick = onOpenSettings, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.Settings, "Réglages") }
+                IconButton(onClick = onRefresh, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.Refresh, "Actualiser") }
                 Box {
-                    IconButton(onClick = { sortMenuExpanded = true }) { Icon(Icons.AutoMirrored.Filled.Sort, "Trier la bibliothèque") }
+                    IconButton(onClick = { sortMenuExpanded = true }, modifier = Modifier.size(36.dp)) { Icon(Icons.AutoMirrored.Filled.Sort, "Trier la bibliothèque") }
                     DropdownMenu(expanded = sortMenuExpanded, onDismissRequest = { sortMenuExpanded = false }) {
                         DropdownMenuItem(text = { Text("Ordre alphabétique") }, onClick = { onSortOrderChange("title"); sortMenuExpanded = false })
                         DropdownMenuItem(text = { Text("Date d’ajout") }, onClick = { onSortOrderChange("date"); sortMenuExpanded = false })
                         DropdownMenuItem(text = { Text("Aléatoire") }, onClick = { onSortOrderChange("random"); sortMenuExpanded = false })
                     }
                 }
-                IconButton(onClick = { onPlayAll(matchingTracks) }, enabled = matchingTracks.isNotEmpty()) { Icon(Icons.Default.PlayArrow, if (searchQuery.isBlank()) "Lire toute la bibliothèque" else "Lire tous les résultats") }
+                IconButton(onClick = { onPlayAll(matchingTracks) }, enabled = matchingTracks.isNotEmpty(), modifier = Modifier.size(36.dp)) { Icon(Icons.Default.PlayArrow, if (searchQuery.isBlank()) "Lire toute la bibliothèque" else "Lire tous les résultats") }
             }
         }
         Spacer(Modifier.height(20.dp))
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Rechercher") },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = "" }) {
-                    Icon(Icons.Default.Clear, contentDescription = "Effacer la recherche")
-                }
-            },
-            placeholder = { Text("Titre, artiste, album ou genre") }
-        )
+        AnimatedVisibility(
+            visible = searchExpanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Rechercher") },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = "" }) {
+                        Icon(Icons.Default.Clear, contentDescription = "Effacer la recherche")
+                    }
+                },
+                placeholder = { Text("Titre, artiste, album ou genre") }
+            )
+        }
         Spacer(Modifier.height(12.dp))
         Text(
             if (searchQuery.isBlank()) "${tracks.size} morceaux locaux" else "${matchingTracks.size} résultat(s) sur ${tracks.size}",
@@ -779,7 +822,7 @@ private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTr
             Text("Aucun morceau ne correspond à « $searchQuery ».", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else Row(Modifier.fillMaxSize()) {
             LazyColumn(Modifier.weight(1f), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(matchingTracks, key = { it.id }) { track -> TrackRow(track, selected == track || currentTrackId == track.id, favoriteIds.contains(track.id), artworkShapeValue, { onSelect(track); onPlay(track) }, { onToggleFavorite(track) }, { onPlayNext(track) }) }
+                items(matchingTracks, key = { it.id }) { track -> TrackRow(track, currentTrackId == track.id, favoriteIds.contains(track.id), artworkShapeValue, { onSelect(track); onPlay(track, matchingTracks) }, { onToggleFavorite(track) }, { onPlayNext(track) }) }
             }
             if (searchQuery.isBlank() && matchingTracks.size > 20) {
                 Column(
@@ -1027,7 +1070,7 @@ private fun SettingsScreen(
             Button(onClick = { customTimerMinutes.toIntOrNull()?.takeIf { it > 0 }?.let(onSleepTimer) }) { Text(if (english) "Start" else "Démarrer") }
         }
         if (sleepTimerRemainingMs > 0) Button(onClick = { onSleepTimer(0) }) { Text(if (english) "Stop timer" else "Arrêter le minuteur") }
-        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version 1.1.3 · 2026") }
+        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version 1.1.4 · 2026") }
         if (showAbout) {
             Text("BM Player · lecteur local sans publicité ni suivi.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Politique de confidentialité\nAucune donnée personnelle, aucun tracker et aucune publicité. La musique reste sur votre appareil.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1041,7 +1084,7 @@ private fun SettingsScreen(
 private fun PlaylistScreen(
     playlists: List<PlaylistEntity>,
     tracks: List<Track>,
-    playlistTrackIds: Set<Long>,
+    playlistTrackIds: List<Long>,
     artworkShapeValue: String,
     onCreate: (String) -> Unit,
     onDelete: (Long) -> Unit,
@@ -1077,7 +1120,7 @@ private fun PlaylistScreen(
         val selectedPlaylist = playlists.firstOrNull { it.id == selectedPlaylistId }
         if (selectedPlaylist != null) {
             Text("Ajouter à « ${selectedPlaylist.name} »", style = MaterialTheme.typography.titleMedium)
-            val selectedTracks = tracks.filter { it.id in playlistTrackIds }
+            val selectedTracks = orderByIds(tracks, playlistTrackIds)
             if (selectedTracks.isNotEmpty()) {
                 Text("${selectedTracks.size} morceaux dans cette playlist", color = MaterialTheme.colorScheme.primary)
                 LazyColumn(Modifier.weight(0.35f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
