@@ -10,11 +10,11 @@ BM Player lit les fichiers audio déjà présents sur l’appareil. Le projet vi
 - Exclusion des notes vocales WhatsApp, Telegram, Messenger et Signal.
 - Lecture en arrière-plan avec Media3 et `MediaSessionService`.
 - Contrôles notification, écran verrouillé et Bluetooth/AVRCP.
-- Recherche dynamique dans les titres, artistes, albums et genres, avec lecture de tous les résultats.
+- Recherche dynamique dans les titres, artistes, albums et genres, avec lecture de tous les résultats ; « & » combine plusieurs recherches (ex. « Damso & SZA »).
 - Reprise de la dernière queue et position après fermeture, lecture aléatoire et répétition.
 - Mini-lecteur persistant avec commandes précédente, lecture/pause et suivante.
 - Clic sur la notification média pour rouvrir directement le lecteur.
-- Action « Lire ensuite » avec ordre conservé pour les sélections successives.
+- Action « Lire ensuite » : le titre passe juste après le morceau en cours, y compris en lecture aléatoire, dans l’ordre des sélections successives.
 - Tri alphabétique, par date d’ajout ou aléatoire, avec index latéral A-Z ; la lecture suit l’ordre affiché.
 - Rescan automatique lorsque MediaStore signale l’arrivée de nouveaux fichiers audio.
 - Crossfade réglable jusqu’à 15 secondes.
@@ -107,7 +107,7 @@ Consulter [LICENSE](LICENSE) pour la licence du code et la section À propos de 
 
 ## État du projet
 
-Version affichée : **1.2.0 · 2026**.
+Version affichée : **1.2.1 · 2026**.
 
 Le projet est en développement actif. Les fonctionnalités dépendant du matériel, notamment certains effets audio, le Bluetooth, les widgets et le crossfade, doivent être vérifiées sur un appareil Android réel. Des utilitaires de parsing LRC et M3U existent dans le code, mais l’import des paroles et l’import/export des playlists ne sont pas encore proposés dans un parcours utilisateur complet.
 

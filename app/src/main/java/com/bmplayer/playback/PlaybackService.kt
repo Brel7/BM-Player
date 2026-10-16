@@ -10,6 +10,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
@@ -109,6 +110,15 @@ class PlaybackService : MediaSessionService() {
         mediaSession = MediaSession.Builder(this, player)
             .setSessionActivity(sessionActivityIntent)
             .setCallback(object : MediaSession.Callback {
+                // Media3 rejects custom commands a controller was not granted here; only this app's own controllers get them.
+                override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+                    if (controller.packageName != packageName) return super.onConnect(session, controller)
+                    val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon().apply {
+                        PlaybackCommands.ALL.forEach { add(SessionCommand(it, Bundle.EMPTY)) }
+                    }.build()
+                    return MediaSession.ConnectionResult.AcceptedResultBuilder(session).setAvailableSessionCommands(commands).build()
+                }
+
                 override fun onCustomCommand(
                     session: MediaSession,
                     controller: MediaSession.ControllerInfo,
@@ -135,6 +145,24 @@ class PlaybackService : MediaSessionService() {
                     PlaybackCommands.SET_VIRTUALIZER_STRENGTH -> {
                         audioEffects?.setVirtualizerStrength(args.getInt(PlaybackCommands.STRENGTH).toShort())
                         Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    }
+                    PlaybackCommands.PLAY_NEXT -> {
+                        val track = repository.tracks.value.firstOrNull { it.id == args.getLong(PlaybackCommands.TRACK_ID) }
+                        if (track == null) {
+                            Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE))
+                        } else {
+                            val index = args.getInt(PlaybackCommands.INDEX).coerceIn(0, player.mediaItemCount)
+                            player.addMediaItem(index, track.toMediaItem())
+                            if (player.shuffleModeEnabled && index > 0) {
+                                // Media3 drops a new item at a random shuffled spot; put it right after the item it follows.
+                                val timeline = player.currentTimeline
+                                val order = generateSequence(timeline.getFirstWindowIndex(true).takeIf { it != C.INDEX_UNSET }) { i ->
+                                    timeline.getNextWindowIndex(i, Player.REPEAT_MODE_OFF, true).takeIf { it != C.INDEX_UNSET }
+                                }.toList()
+                                player.setShuffleOrder(DefaultShuffleOrder(moveAfter(order, index, index - 1).toIntArray(), System.nanoTime()))
+                            }
+                            Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                        }
                     }
                     else -> Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
                 }

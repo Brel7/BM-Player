@@ -8,6 +8,10 @@ object PlaybackCommands {
     const val SET_BASS_STRENGTH = "com.bmplayer.playback.SET_BASS_STRENGTH"
     const val SET_VIRTUALIZER_STRENGTH = "com.bmplayer.playback.SET_VIRTUALIZER_STRENGTH"
     const val STRENGTH = "strength"
+    const val PLAY_NEXT = "com.bmplayer.playback.PLAY_NEXT"
+    const val TRACK_ID = "track_id"
+    const val INDEX = "index"
+    val ALL = listOf(SET_EFFECTS_ENABLED, SET_CROSSFADE, SET_BASS_STRENGTH, SET_VIRTUALIZER_STRENGTH, PLAY_NEXT)
 }
 
 fun shouldStartCrossfade(isPlaying: Boolean, inProgress: Boolean, repeatOne: Boolean, crossfadeMs: Long, durationMs: Long, positionMs: Long, hasNext: Boolean): Boolean =

@@ -27,4 +27,14 @@ class TrackOrderingTest {
         assertEquals(listOf(2L, 1L), orderByIds(library, listOf(2L, 99L, 1L)).map { it.id })
     }
 
+    private val library = listOf(testTrack(1, "Macarena", "Damso"), testTrack(2, "Kill Bill", "SZA"), testTrack(3, "Other", "Someone"), testTrack(4, "Boxer", "Simon & Garfunkel"))
+
+    @Test fun ampersandSearchesEachArtist() = assertEquals(listOf(1L, 2L), searchTracks(library, "Damso & SZA").map { it.id })
+
+    @Test fun ampersandInsideANameStillMatches() = assertEquals(listOf(4L), searchTracks(library, "simon & garfunkel").map { it.id })
+
+    @Test fun trailingAmpersandWhileTyping() = assertEquals(listOf(1L), searchTracks(library, "damso &").map { it.id })
+
+    @Test fun blankSearchKeepsAll() = assertEquals(4, searchTracks(library, "  ").size)
+
 }

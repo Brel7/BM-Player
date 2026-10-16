@@ -177,6 +177,8 @@ import com.bmplayer.playback.PlaybackCommands
 import com.bmplayer.playback.PlaybackService
 import com.bmplayer.playback.planResume
 import com.bmplayer.playback.toMediaItem
+import com.bmplayer.playback.advancePending
+import com.bmplayer.ui.searchTracks
 import com.bmplayer.ui.LibraryViewModel
 import com.bmplayer.ui.sortTracks
 import com.bmplayer.ui.theme.BMPlayerTheme
@@ -220,7 +222,7 @@ class MainActivity : ComponentActivity() {
     private var currentTrackId by mutableStateOf<Long?>(null)
     private var sleepTimerRemainingMs by mutableStateOf(0L)
     private var sleepTimerTotalMs by mutableStateOf(0L)
-    private val pendingNextTrackIds = mutableListOf<Long>()
+    private var pendingNextTrackIds = emptyList<Long>()
     private var lastObservedTrackId: Long? = null
     private var playbackRestorationFinished = false
     private var mediaScanJob: Job? = null
@@ -275,9 +277,7 @@ class MainActivity : ComponentActivity() {
                         playbackPlaying = mediaController.isPlaying
                         val observedTrackId = mediaController.currentMediaItem?.mediaId?.toLongOrNull()
                         if (observedTrackId != lastObservedTrackId) {
-                            if (observedTrackId != null && pendingNextTrackIds.firstOrNull() == observedTrackId) {
-                                pendingNextTrackIds.removeAt(0)
-                            }
+                            pendingNextTrackIds = advancePending(pendingNextTrackIds, observedTrackId)
                             lastObservedTrackId = observedTrackId
                         }
                         currentTrackId = observedTrackId
@@ -457,6 +457,7 @@ class MainActivity : ComponentActivity() {
 
     private fun playTrack(track: Track, queue: List<Track>) {
         lifecycleScope.launch { historyDao.record(HistoryEntity(trackId = track.id)) }
+        pendingNextTrackIds = emptyList()
         controller?.setMediaItems(queue.map { it.toMediaItem() }, queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0), 0L)
         controller?.prepare()
         controller?.play()
@@ -464,6 +465,7 @@ class MainActivity : ComponentActivity() {
 
     private fun playAll(tracks: List<Track>) {
         if (tracks.isEmpty()) return
+        pendingNextTrackIds = emptyList()
         controller?.setMediaItems(tracks.map { it.toMediaItem() })
         controller?.prepare()
         controller?.play()
@@ -476,8 +478,12 @@ class MainActivity : ComponentActivity() {
             return
         }
         val insertAt = (player.currentMediaItemIndex + 1 + pendingNextTrackIds.size).coerceIn(0, player.mediaItemCount)
-        player.addMediaItem(insertAt, track.toMediaItem())
-        pendingNextTrackIds += track.id
+        // The service inserts it, so it can also place it next in the shuffled order.
+        player.sendCustomCommand(
+            SessionCommand(PlaybackCommands.PLAY_NEXT, Bundle.EMPTY),
+            Bundle().apply { putLong(PlaybackCommands.TRACK_ID, track.id); putInt(PlaybackCommands.INDEX, insertAt) }
+        )
+        pendingNextTrackIds = pendingNextTrackIds + track.id
         lifecycleScope.launch { persistPlaybackState(player) }
     }
 
@@ -797,13 +803,7 @@ private fun LibraryScreen(tracks: List<Track>, favoriteIds: Set<Long>, currentTr
         }
     }
     val orderedTracks = remember(tracks, sortOrder) { sortTracks(tracks, sortOrder) }
-    val matchingTracks = remember(orderedTracks, searchQuery) {
-        val query = searchQuery.trim()
-        if (query.isEmpty()) orderedTracks else orderedTracks.filter { track ->
-            listOf(track.title, track.artist, track.album, track.genre)
-                .any { value -> value.contains(query, ignoreCase = true) }
-        }
-    }
+    val matchingTracks = remember(orderedTracks, searchQuery) { searchTracks(orderedTracks, searchQuery) }
     Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
@@ -1219,7 +1219,7 @@ private fun SettingsScreen(
                 Button(onClick = { onSleepTimer(customTimerMinutes) }) { Text(if (english) "Start" else "Démarrer") }
             }
         }
-        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version 1.2.0 · 2026") }
+        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version 1.2.1 · 2026") }
         if (showAbout) {
             Text("BM Player · lecteur local sans publicité ni suivi.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Politique de confidentialité\nAucune donnée personnelle, aucun tracker et aucune publicité. La musique reste sur votre appareil.", color = MaterialTheme.colorScheme.onSurfaceVariant)
