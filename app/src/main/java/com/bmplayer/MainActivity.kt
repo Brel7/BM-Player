@@ -731,10 +731,10 @@ private fun BMPlayerApp(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         NavigationBar {
-                            NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.LibraryMusic, null) }, label = { Text(if (english) "Library" else "Bibliothèque") })
-                            NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text(if (english) "Playing" else "Lecture") })
-                            NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = { Icon(Icons.Default.Favorite, null) }, label = { Text(if (english) "Favorites" else "Favoris") })
-                            NavigationBarItem(selected = tab == 4, onClick = { tab = 4 }, icon = { Icon(Icons.Default.Album, null) }, label = { Text("Playlists") })
+                            NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Default.LibraryMusic, null) }, label = { TabLabel(if (english) "Library" else "Bibliothèque") })
+                            NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Default.Album, null) }, label = { TabLabel(if (english) "Playing" else "Lecture") })
+                            NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = { Icon(Icons.Default.Favorite, null) }, label = { TabLabel(if (english) "Favorites" else "Favoris") })
+                            NavigationBarItem(selected = tab == 4, onClick = { tab = 4 }, icon = { Icon(Icons.Default.Album, null) }, label = { TabLabel("Playlists") })
                         }
                         IconButton(onClick = { bottomBarCollapsed = true }, modifier = Modifier.size(26.dp)) {
                             Icon(Icons.Default.KeyboardArrowDown, if (english) "Hide navigation" else "Réduire la barre", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -765,6 +765,10 @@ private fun BMPlayerApp(
         }
     }
 }
+
+// "Bibliothèque" wrapped and left its last letter alone on a second line at the default label size.
+@Composable
+private fun TabLabel(text: String) = Text(text, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
 
 @Composable
 private fun CollapsedPill(appearanceStyle: String, onDragIntent: (Boolean) -> Unit, onClick: () -> Unit, content: @Composable () -> Unit) {
