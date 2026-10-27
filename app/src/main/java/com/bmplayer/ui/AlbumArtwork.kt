@@ -1,5 +1,6 @@
 package com.bmplayer.ui
 
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -52,6 +53,30 @@ suspend fun loadCachedArtwork(context: Context, track: Track, maxSide: Int): Bit
     val artwork = loadArtworkBitmap(context, track.uri, track.artworkUri, maxSide)
     if (artwork == null) artworkMisses += key else artworkCache.put(key, artwork)
     return artwork
+}
+
+/** Share of the cover cache worth keeping when Android asks for memory back: 1 keep all, 0 give it all back. */
+fun artworkCacheKeepFraction(level: Int): Float = when (level) {
+    ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE,
+    ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN,
+    ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> 0.5f
+    ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW,
+    ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL,
+    ComponentCallbacks2.TRIM_MEMORY_MODERATE,
+    ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> 0f
+    else -> 1f
+}
+
+// Covers decode again from the files; holding 24 MB while the system is short is what gets an app killed.
+fun trimArtworkCache(level: Int) {
+    when (val keep = artworkCacheKeepFraction(level)) {
+        1f -> Unit
+        0f -> {
+            artworkCache.evictAll()
+            artworkMisses.clear()
+        }
+        else -> artworkCache.trimToSize((artworkCache.maxSize() * keep).toInt())
+    }
 }
 
 fun dominantAccent(bitmap: Bitmap): Int? {
