@@ -36,6 +36,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,9 +81,16 @@ fun QueueSheet(
     val rowHeightPx = with(LocalDensity.current) { QueueRowHeight.roundToPx() }
     val haptics = LocalHapticFeedback.current
     val listState = rememberLazyListState()
-    LaunchedEffect(entries) {
+    LaunchedEffect(Unit) {
         val playing = rows.indexOfFirst { it.track.id == currentTrackId }
         if (playing > 0) listState.scrollToItem(playing)
+    }
+
+    fun moveRow(from: Int, to: Int): Boolean {
+        if (from !in rows.indices || to !in rows.indices) return false
+        onMove(rows[from].index, rows[to].index)
+        rows = moveItem(rows, from, to)
+        return true
     }
 
     fun dropDraggedRow() {
@@ -122,8 +130,10 @@ fun QueueSheet(
                 }
             } else {
                 LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
-                    itemsIndexed(rows, key = { _, entry -> entry.index }) { position, entry ->
+                    itemsIndexed(rows, key = { _, entry -> entry.uid }) { position, entry ->
                         val dragging = draggedSlot == position
+                        // The handler below is installed once, so it must read the row's current place, not the one it was born with.
+                        val slot by rememberUpdatedState(position)
                         val playing = entry.track.id == currentTrackId
                         Row(
                             Modifier
@@ -153,12 +163,10 @@ fun QueueSheet(
                                 .semantics {
                                     customActions = listOf(
                                         CustomAccessibilityAction(if (english) "Move up" else "Monter") {
-                                            if (position > 0) onMove(rows[position].index, rows[position - 1].index)
-                                            true
+                                            moveRow(position, position - 1)
                                         },
                                         CustomAccessibilityAction(if (english) "Move down" else "Descendre") {
-                                            if (position < rows.lastIndex) onMove(rows[position].index, rows[position + 1].index)
-                                            true
+                                            moveRow(position, position + 1)
                                         }
                                     )
                                 }
@@ -190,8 +198,8 @@ fun QueueSheet(
                                     detectDragGestures(
                                         onDragStart = {
                                             orderAtDragStart = rows
-                                            draggedSlot = position
-                                            dragStartSlot = position
+                                            draggedSlot = slot
+                                            dragStartSlot = slot
                                             dragOffsetPx = 0f
                                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         },

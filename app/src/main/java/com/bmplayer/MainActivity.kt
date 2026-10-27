@@ -114,6 +114,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.produceState
@@ -256,6 +257,12 @@ class MainActivity : ComponentActivity() {
         val controllerFuture = MediaController.Builder(this, token).buildAsync()
         controllerFuture.addListener({
             controller = controllerFuture.get()
+            queueTrackIds = readQueueIds()
+            controller?.addListener(object : androidx.media3.common.Player.Listener {
+                override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                    queueTrackIds = readQueueIds()
+                }
+            })
             lifecycleScope.launch {
                 val savedCrossfade = preferencesStore.preferences.first().crossfadeSeconds
                 val savedPreferences = preferencesStore.preferences.first()
@@ -287,7 +294,6 @@ class MainActivity : ComponentActivity() {
                             lastObservedTrackId = observedTrackId
                         }
                         currentTrackId = observedTrackId
-                        queueTrackIds = (0 until mediaController.mediaItemCount).mapNotNull { mediaController.getMediaItemAt(it).mediaId.toLongOrNull() }
                         shuffleEnabledState = mediaController.shuffleModeEnabled
                         repeatModeState = mediaController.repeatMode
                         val now = System.currentTimeMillis()
@@ -451,6 +457,10 @@ class MainActivity : ComponentActivity() {
             playbackRestorationFinished = true
         }
     }
+
+    private fun readQueueIds(): List<Long> = controller?.let { player ->
+        (0 until player.mediaItemCount).mapNotNull { player.getMediaItemAt(it).mediaId.toLongOrNull() }
+    } ?: emptyList()
 
     private fun persistPlaybackState(player: MediaController) {
         if (player.mediaItemCount == 0) return
@@ -1272,7 +1282,9 @@ private fun SettingsScreen(
                 Button(onClick = { onSleepTimer(customTimerMinutes) }) { Text(if (english) "Start" else "Démarrer") }
             }
         }
-        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version ${appVersionName(LocalContext.current)} · 2026") }
+        val aboutContext = LocalContext.current
+        val appVersion = remember(aboutContext) { appVersionName(aboutContext) }
+        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version $appVersion · 2026") }
         if (showAbout) {
             Text("BM Player · lecteur local sans publicité ni suivi.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Politique de confidentialité\nAucune donnée personnelle, aucun tracker et aucune publicité. La musique reste sur votre appareil.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1286,8 +1298,11 @@ private fun SettingsScreen(
 internal fun ArtworkImage(track: Track, modifier: Modifier, maxSide: Int = 256) {
     val context = LocalContext.current
     // The cached bitmap is the initial value, so a cover already decoded comes back without a blank frame.
-    val artwork by produceState(cachedArtwork(track.id, maxSide), track.id, maxSide) {
-        value = loadCachedArtwork(context, track, maxSide)
+    // key() gives a reused row a fresh state holder, otherwise it keeps showing the cover of the track it held before.
+    val artwork by key(track.id, maxSide) {
+        produceState(cachedArtwork(track.id, maxSide), track.id, maxSide) {
+            value = loadCachedArtwork(context, track, maxSide)
+        }
     }
     Crossfade(artwork, modifier, tween(motionMs(220)), label = "artwork") { bitmap ->
         if (bitmap != null) {

@@ -17,6 +17,14 @@ class QueueTest {
 
     @Test fun emptyQueueHasNoEntries() = assertEquals(emptyList<QueueEntry>(), queueEntries(library, emptyList()))
 
+    @Test fun duplicatesGetDistinctKeys() =
+        assertEquals(listOf("1#0", "1#1"), queueEntries(library, listOf(1L, 1L)).map { it.uid })
+
+    @Test fun theKeyFollowsTheTrackThroughAReorder() = assertEquals(
+        queueEntries(library, listOf(1L, 2L, 3L)).associate { it.uid to it.track.id },
+        queueEntries(library, listOf(3L, 1L, 2L)).associate { it.uid to it.track.id }
+    )
+
     @Test fun moveDown() = assertEquals(listOf("b", "c", "a"), moveItem(listOf("a", "b", "c"), 0, 2))
 
     @Test fun moveUp() = assertEquals(listOf("c", "a", "b"), moveItem(listOf("a", "b", "c"), 2, 0))

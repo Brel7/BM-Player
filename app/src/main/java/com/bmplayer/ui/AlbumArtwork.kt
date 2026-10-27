@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.LruCache
+import java.util.concurrent.ConcurrentHashMap
 import com.bmplayer.domain.model.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -41,9 +42,17 @@ private val artworkCache = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
 
 fun cachedArtwork(trackId: Long, maxSide: Int): Bitmap? = artworkCache.get("$trackId@$maxSide")
 
-suspend fun loadCachedArtwork(context: Context, track: Track, maxSide: Int): Bitmap? =
-    cachedArtwork(track.id, maxSide)
-        ?: loadArtworkBitmap(context, track.uri, track.artworkUri, maxSide)?.also { artworkCache.put("${track.id}@$maxSide", it) }
+// A track with no cover at all is remembered too, otherwise every bind re-opened the file for nothing.
+private val artworkMisses = ConcurrentHashMap.newKeySet<String>()
+
+suspend fun loadCachedArtwork(context: Context, track: Track, maxSide: Int): Bitmap? {
+    val key = "${track.id}@$maxSide"
+    cachedArtwork(track.id, maxSide)?.let { return it }
+    if (key in artworkMisses) return null
+    val artwork = loadArtworkBitmap(context, track.uri, track.artworkUri, maxSide)
+    if (artwork == null) artworkMisses += key else artworkCache.put(key, artwork)
+    return artwork
+}
 
 fun dominantAccent(bitmap: Bitmap): Int? {
     val scale = 32f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)

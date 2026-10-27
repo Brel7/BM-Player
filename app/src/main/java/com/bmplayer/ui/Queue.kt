@@ -3,12 +3,22 @@ package com.bmplayer.ui
 import com.bmplayer.domain.model.Track
 import kotlin.math.roundToInt
 
-/** [index] is the track's place in the Media3 timeline, which stays the row's key while the list is reordered. */
-data class QueueEntry(val index: Int, val track: Track)
+/**
+ * [index] is the track's place in the Media3 timeline, which a move renumbers; [uid] stays with the track
+ * across a move, which is what the list needs as a row key for the right row to animate.
+ */
+data class QueueEntry(val index: Int, val track: Track, val uid: String)
 
 fun queueEntries(tracks: List<Track>, ids: List<Long>): List<QueueEntry> {
     val byId = tracks.associateBy { it.id }
-    return ids.mapIndexedNotNull { index, id -> byId[id]?.let { QueueEntry(index, it) } }
+    val seen = mutableMapOf<Long, Int>()
+    return ids.mapIndexedNotNull { index, id ->
+        byId[id]?.let { track ->
+            val occurrence = seen.getOrDefault(id, 0)
+            seen[id] = occurrence + 1
+            QueueEntry(index, track, "$id#$occurrence")
+        }
+    }
 }
 
 fun <T> moveItem(list: List<T>, from: Int, to: Int): List<T> {
