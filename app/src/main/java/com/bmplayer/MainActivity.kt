@@ -6,8 +6,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -43,6 +41,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,9 +70,11 @@ import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
@@ -129,6 +130,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -142,6 +144,9 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.paint
 import com.bmplayer.ui.backgroundFile
 import com.bmplayer.ui.backDestination
+import com.bmplayer.ui.barCollapseIntent
+import com.bmplayer.ui.QueueSheet
+import com.bmplayer.ui.queueEntries
 import com.bmplayer.ui.previousRestartsTrack
 import androidx.compose.runtime.rememberUpdatedState
 import com.bmplayer.ui.CollectionsScreen
@@ -151,6 +156,8 @@ import com.bmplayer.ui.isForwardTransition
 import androidx.activity.compose.BackHandler
 import com.bmplayer.ui.dominantAccent
 import com.bmplayer.ui.loadArtworkBitmap
+import com.bmplayer.ui.cachedArtwork
+import com.bmplayer.ui.loadCachedArtwork
 import com.bmplayer.ui.saveBackgroundImage
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -189,13 +196,11 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -220,6 +225,7 @@ class MainActivity : ComponentActivity() {
     private var effectsSupported by mutableStateOf<Boolean?>(null)
     private var playbackTicker: Job? = null
     private var currentTrackId by mutableStateOf<Long?>(null)
+    private var queueTrackIds by mutableStateOf(emptyList<Long>())
     private var sleepTimerRemainingMs by mutableStateOf(0L)
     private var sleepTimerTotalMs by mutableStateOf(0L)
     private var pendingNextTrackIds = emptyList<Long>()
@@ -281,6 +287,7 @@ class MainActivity : ComponentActivity() {
                             lastObservedTrackId = observedTrackId
                         }
                         currentTrackId = observedTrackId
+                        queueTrackIds = (0 until mediaController.mediaItemCount).mapNotNull { mediaController.getMediaItemAt(it).mediaId.toLongOrNull() }
                         shuffleEnabledState = mediaController.shuffleModeEnabled
                         repeatModeState = mediaController.repeatMode
                         val now = System.currentTimeMillis()
@@ -322,6 +329,16 @@ class MainActivity : ComponentActivity() {
                     playbackPositionMs = playbackPositionMs,
                     playbackDurationMs = playbackDurationMs,
                     currentTrackId = currentTrackId,
+                    queueTrackIds = queueTrackIds,
+                    onQueueMove = { from, to ->
+                        // Media3 keeps the shuffled order private, so the order shown only becomes the order played once shuffle is off.
+                        controller?.shuffleModeEnabled = false
+                        controller?.moveMediaItem(from, to)
+                        // playNext places a track from the pending list, whose positions a manual move invalidates.
+                        pendingNextTrackIds = emptyList()
+                        controller?.let(::persistPlaybackState)
+                    },
+                    onPlayQueueIndex = { index -> controller?.seekTo(index, 0L); controller?.play() },
                     onSeek = { position -> controller?.seekTo(position) },
                     onPause = { controller?.pause() },
                     onResume = { controller?.play() },
@@ -554,6 +571,20 @@ private fun UserPreferences.defaultAccent(): Color =
 private suspend fun extractAlbumAccent(context: Context, track: Track): Color? =
     loadArtworkBitmap(context, track.uri, track.artworkUri, 256)?.let(::dominantAccent)?.let(::Color)
 
+// Dragging the bar is the alternative to the chevron, for when a faulty key or the keyboard makes the button unreachable.
+@Composable
+private fun Modifier.barDragCollapse(onIntent: (Boolean) -> Unit): Modifier {
+    val threshold = with(LocalDensity.current) { 48.dp.toPx() }
+    return this.pointerInput(Unit) {
+        var total = 0f
+        detectVerticalDragGestures(
+            onDragStart = { total = 0f },
+            onDragEnd = { barCollapseIntent(total, threshold)?.let(onIntent) },
+            onVerticalDrag = { _, amount -> total += amount }
+        )
+    }
+}
+
 internal fun artworkShape(value: String): RoundedCornerShape = when (value) {
     "round" -> RoundedCornerShape(50)
     "square" -> RoundedCornerShape(0)
@@ -574,6 +605,9 @@ private fun BMPlayerApp(
     onPlayAll: (List<Track>) -> Unit,
     isPlaying: Boolean,
     currentTrackId: Long?,
+    queueTrackIds: List<Long>,
+    onQueueMove: (Int, Int) -> Unit,
+    onPlayQueueIndex: (Int) -> Unit,
     playbackPositionMs: Long,
     playbackDurationMs: Long,
     onSeek: (Long) -> Unit,
@@ -612,6 +646,8 @@ private fun BMPlayerApp(
     var selectedTrack by remember { mutableStateOf<Track?>(null) }
     var tab by remember { mutableStateOf(0) }
     var bottomBarCollapsed by remember { mutableStateOf(false) }
+    var queueOpen by remember { mutableStateOf(false) }
+    val queueRows = remember(tracks, queueTrackIds) { queueEntries(tracks, queueTrackIds) }
     val backTarget = backDestination(tab, currentTrackId != null)
     BackHandler(enabled = backTarget != null) { backTarget?.let { tab = it } }
     val activeTrack = tracks.firstOrNull { it.id == currentTrackId } ?: selectedTrack
@@ -649,18 +685,17 @@ private fun BMPlayerApp(
             label = "bottom-bar-collapse"
         ) { collapsed ->
             if (collapsed) {
-                Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
-                    Surface(
-                        Modifier.size(width = 64.dp, height = 30.dp)
-                            .liquidGlassSurface(RoundedCornerShape(50))
-                            .clickable { bottomBarCollapsed = false },
-                        shape = RoundedCornerShape(50),
-                        color = if (preferences.appearanceStyle != "standard") Color.Transparent else MaterialTheme.colorScheme.surface,
-                        tonalElevation = 4.dp
-                    ) {
-                        IconButton(onClick = { bottomBarCollapsed = false }) {
-                            Icon(Icons.Default.KeyboardArrowUp, if (english) "Show navigation" else "Rouvrir la barre")
-                        }
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CollapsedPill(preferences.appearanceStyle, { bottomBarCollapsed = it }, { queueOpen = true }) {
+                        Icon(Icons.AutoMirrored.Filled.QueueMusic, if (english) "Queue" else "File d'attente")
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    CollapsedPill(preferences.appearanceStyle, { bottomBarCollapsed = it }, { bottomBarCollapsed = false }) {
+                        Icon(Icons.Default.KeyboardArrowUp, if (english) "Show navigation" else "Rouvrir la barre")
                     }
                 }
             } else if (currentTrackId != null && tab != 1 && activeTrack != null) {
@@ -678,7 +713,7 @@ private fun BMPlayerApp(
                 )
             } else {
                 Surface(
-                    Modifier.padding(12.dp).liquidGlassSurface(RoundedCornerShape(28.dp)),
+                    Modifier.padding(12.dp).liquidGlassSurface(RoundedCornerShape(28.dp)).barDragCollapse { bottomBarCollapsed = it },
                     shape = RoundedCornerShape(28.dp),
                     color = if (preferences.appearanceStyle != "standard") Color.Transparent else MaterialTheme.colorScheme.surface,
                     tonalElevation = 8.dp,
@@ -715,6 +750,23 @@ private fun BMPlayerApp(
             else if (screen == 3) { val favorites = tracks.filter { it.id in favoriteIds }; FavoritesScreen(favorites, currentTrackId, preferences.artworkShape, { selectedTrack = it; onPlay(it, favorites) }, { onToggleFavorite(it) }, Modifier.padding(padding)) }
             else CollectionsScreen(tracks, playlists, playlistTracks, currentTrackId, preferences.artworkShape, english, onPlay, onPlayGroup, onCreatePlaylist, onDeletePlaylist, onAddTracks, onRemoveTrack, Modifier.padding(padding), active = screen == tab)
         }
+        if (queueOpen) {
+            QueueSheet(queueRows, currentTrackId, preferences.artworkShape, shuffleEnabled, english, onQueueMove, onPlayQueueIndex) { queueOpen = false }
+        }
+    }
+}
+
+@Composable
+private fun CollapsedPill(appearanceStyle: String, onDragIntent: (Boolean) -> Unit, onClick: () -> Unit, content: @Composable () -> Unit) {
+    Surface(
+        Modifier.size(width = 64.dp, height = 30.dp)
+            .liquidGlassSurface(RoundedCornerShape(50))
+            .barDragCollapse(onDragIntent),
+        shape = RoundedCornerShape(50),
+        color = if (appearanceStyle != "standard") Color.Transparent else MaterialTheme.colorScheme.surface,
+        tonalElevation = 4.dp
+    ) {
+        IconButton(onClick = onClick) { content() }
     }
 }
 
@@ -737,6 +789,7 @@ private fun MiniPlayerDock(
         Modifier.fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .liquidGlassSurface(dockShape)
+            .barDragCollapse { if (it) onCollapse() }
             .background(MaterialTheme.colorScheme.surface.copy(alpha = if (LocalAppearance.current != "standard") 0.62f else 0.98f), dockShape)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -754,7 +807,7 @@ private fun MiniPlayerDock(
         ) { shown ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(44.dp).clip(artworkShape(artworkShapeValue))) {
-                    ArtworkImage(shown, Modifier.fillMaxSize())
+                    ArtworkImage(shown, Modifier.fillMaxSize(), maxSide = 160)
                 }
                 Spacer(Modifier.width(10.dp))
                 Column {
@@ -953,7 +1006,7 @@ private fun TrackRow(track: Track, selected: Boolean, favorite: Boolean, artwork
     val rowShape = RoundedCornerShape(if (LocalLiquidGlass.current) 14.dp else 4.dp)
     Row(Modifier.fillMaxWidth().clip(rowShape).background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .14f) else Color.Transparent).liquidGlassSurface(rowShape).clickable(onClick = onClick).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(52.dp).clip(artworkShape(artworkShapeValue)).background(MaterialTheme.colorScheme.primary.copy(alpha = .18f)), contentAlignment = Alignment.Center) {
-            ArtworkImage(track, Modifier.fillMaxSize())
+            ArtworkImage(track, Modifier.fillMaxSize(), maxSide = 160)
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -1064,7 +1117,7 @@ private fun NowPlayingScreen(track: Track?, isFavorite: Boolean, artworkShapeVal
                 },
                 label = "album-art-transition"
             ) { displayedTrack ->
-                if (displayedTrack != null) ArtworkImage(displayedTrack, Modifier.fillMaxSize())
+                if (displayedTrack != null) ArtworkImage(displayedTrack, Modifier.fillMaxSize(), maxSide = 1024)
                 else Icon(Icons.Default.LibraryMusic, null, Modifier.size(90.dp), tint = MaterialTheme.colorScheme.primary)
             }
         }
@@ -1219,7 +1272,7 @@ private fun SettingsScreen(
                 Button(onClick = { onSleepTimer(customTimerMinutes) }) { Text(if (english) "Start" else "Démarrer") }
             }
         }
-        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version 1.2.1 · 2026") }
+        Row(Modifier.fillMaxWidth().liquidGlassSurface(RoundedCornerShape(16.dp)).clickable { showAbout = !showAbout }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (english) "About" else "À propos", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text("Version ${appVersionName(LocalContext.current)} · 2026") }
         if (showAbout) {
             Text("BM Player · lecteur local sans publicité ni suivi.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Politique de confidentialité\nAucune donnée personnelle, aucun tracker et aucune publicité. La musique reste sur votre appareil.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1230,22 +1283,20 @@ private fun SettingsScreen(
 }
 
 @Composable
-internal fun ArtworkImage(track: Track, modifier: Modifier) {
+internal fun ArtworkImage(track: Track, modifier: Modifier, maxSide: Int = 256) {
     val context = LocalContext.current
-    val embeddedArtwork by produceState<Bitmap?>(initialValue = null, track.uri) {
-        value = withContext(Dispatchers.IO) {
-            runCatching {
-                MediaMetadataRetriever().use { retriever ->
-                    retriever.setDataSource(context, track.uri)
-                    retriever.embeddedPicture?.let { bytes -> android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-                }
-            }.getOrNull()
-        }
+    // The cached bitmap is the initial value, so a cover already decoded comes back without a blank frame.
+    val artwork by produceState(cachedArtwork(track.id, maxSide), track.id, maxSide) {
+        value = loadCachedArtwork(context, track, maxSide)
     }
-    if (embeddedArtwork != null) {
-        Image(embeddedArtwork!!.asImageBitmap(), contentDescription = "Pochette de ${track.title}", modifier = modifier, contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-    } else {
-        AsyncImage(model = track.artworkUri, contentDescription = "Pochette de ${track.title}", modifier = modifier, contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+    Crossfade(artwork, modifier, tween(motionMs(220)), label = "artwork") { bitmap ->
+        if (bitmap != null) {
+            Image(bitmap.asImageBitmap(), "Pochette de ${track.title}", Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+        } else {
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = .18f)), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.MusicNote, null, Modifier.fillMaxSize(0.4f), tint = MaterialTheme.colorScheme.primary)
+            }
+        }
     }
 }
 
@@ -1282,6 +1333,10 @@ private fun AnimatedWaveform(isPlaying: Boolean) {
         }
     }
 }
+
+// Read from the installed package: the version used to be typed here by hand and drifted behind the build.
+private fun appVersionName(context: Context): String =
+    runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: ""
 
 private fun formatDuration(milliseconds: Long): String { val seconds = milliseconds / 1000; return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}" }
 

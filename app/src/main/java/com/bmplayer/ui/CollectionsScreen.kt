@@ -319,7 +319,7 @@ private fun GroupTrackRow(track: Track, playing: Boolean, artworkShapeValue: Str
             .liquidGlassSurface(shape).clickable(onClick = onClick).padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(44.dp).clip(artworkShape(artworkShapeValue))) { ArtworkImage(track, Modifier.fillMaxSize()) }
+        Box(Modifier.size(44.dp).clip(artworkShape(artworkShapeValue))) { ArtworkImage(track, Modifier.fillMaxSize(), maxSide = 160) }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (playing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)

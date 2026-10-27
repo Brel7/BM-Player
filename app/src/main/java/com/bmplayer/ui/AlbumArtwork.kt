@@ -6,6 +6,8 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.util.LruCache
+import com.bmplayer.domain.model.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -31,6 +33,17 @@ suspend fun loadArtworkBitmap(context: Context, trackUri: Uri, artworkUri: Uri?,
     val (width, height) = fitWithin(artwork.width, artwork.height, maxSide)
     if (width == artwork.width && height == artwork.height) artwork else Bitmap.createScaledBitmap(artwork, width, height, true)
 }
+
+// Decoding a cover at full size on every bind made lists stutter and covers blink on the way back to a screen.
+private val artworkCache = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: Bitmap) = value.byteCount
+}
+
+fun cachedArtwork(trackId: Long, maxSide: Int): Bitmap? = artworkCache.get("$trackId@$maxSide")
+
+suspend fun loadCachedArtwork(context: Context, track: Track, maxSide: Int): Bitmap? =
+    cachedArtwork(track.id, maxSide)
+        ?: loadArtworkBitmap(context, track.uri, track.artworkUri, maxSide)?.also { artworkCache.put("${track.id}@$maxSide", it) }
 
 fun dominantAccent(bitmap: Bitmap): Int? {
     val scale = 32f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)

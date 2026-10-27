@@ -25,4 +25,10 @@ class NavigationTest {
         assertTrue(isForwardTransition(4, 2))
         assertFalse(isForwardTransition(3, 1))
     }
+
+    @Test fun dragDownCollapsesTheBar() = assertEquals(true, barCollapseIntent(60f, 48f))
+
+    @Test fun dragUpReopensTheBar() = assertEquals(false, barCollapseIntent(-60f, 48f))
+
+    @Test fun shortDragChangesNothing() = assertNull(barCollapseIntent(20f, 48f))
 }

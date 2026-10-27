@@ -18,9 +18,11 @@ BM Player lit les fichiers audio déjà présents sur l’appareil. Le projet vi
 - Tri alphabétique, par date d’ajout ou aléatoire, avec index latéral A-Z ; la lecture suit l’ordre affiché.
 - Rescan automatique lorsque MediaStore signale l’arrivée de nouveaux fichiers audio.
 - Crossfade réglable jusqu’à 15 secondes.
-- Pochettes intégrées et pochettes MediaStore, avec choix de forme.
+- Pochettes intégrées et pochettes MediaStore, avec choix de forme, décodées à la taille affichée et gardées en cache mémoire, avec apparition en fondu.
 - Favoris persistants.
 - Écran Playlists en trois onglets : par artiste, par album et compiles personnelles (création, ajout et retrait de titres, lecture dans l’ordre ou aléatoire).
+- File d’attente consultable depuis la barre d’outils réduite : chaque titre porte un indice, un doigt maintenu dessus déplace le titre librement dans la file.
+- Barre d’outils réductible et rouvrable au glissement, en plus du chevron.
 - Minuteur d’arrêt avec durées prédéfinies et curseur.
 - Égaliseur, bass boost et spatialisation selon les effets exposés par l’appareil.
 - Thème clair/sombre, styles Standard, Liquid Glass ou Transparent (photo de la galerie en fond), accent adapté à la pochette et formes personnalisables.

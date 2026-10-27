@@ -11,3 +11,10 @@ fun backDestination(tab: Int, hasTrack: Boolean): Int? = when (tab) {
 }
 
 fun isForwardTransition(from: Int, to: Int): Boolean = TAB_ORDER.indexOf(to) > TAB_ORDER.indexOf(from)
+
+/** What a vertical drag of [totalDyPx] on the bottom bar means: true collapse, false reopen, null too short to count. */
+fun barCollapseIntent(totalDyPx: Float, thresholdPx: Float): Boolean? = when {
+    totalDyPx > thresholdPx -> true
+    totalDyPx < -thresholdPx -> false
+    else -> null
+}
